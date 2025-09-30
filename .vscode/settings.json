@@ -1,0 +1,5 @@
+{
+    "python.analysis.extraPaths": [
+        "uArm-Python-SDK-2.0"
+    ]
+}
