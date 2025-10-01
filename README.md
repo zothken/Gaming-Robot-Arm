@@ -3,7 +3,8 @@
 To use this, the developer GitHub repository needs to be added to the workspace:
 https://github.com/uArm-Developer/uArm-Python-SDK
 
-Additionaly, the workspace runs in a virtual environment with .venv
+Additionally, the workspace runs in a virtual environment with .venv
+and uses cv2 via a pip install: pip install opencv-python
 
 ## Getting started
 
