@@ -6,6 +6,9 @@ from uarm.wrapper import SwiftAPI
 from uarm.utils.log import logger
 logger.setLevel(logger.VERBOSE)
 
+
+
+
 swift = SwiftAPI(port="COM5", callback_thread_pool_size=1)
 
 #swift.reset()

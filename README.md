@@ -1,6 +1,6 @@
 # Gaming Robot Arm
 
-To use this, the developer GitHub repository needs to be added to the workspace:
+To use this, the developer GitHub repository needs to be added to the parent folder:
 https://github.com/uArm-Developer/uArm-Python-SDK
 
 Additionally, the workspace runs in a virtual environment with .venv
