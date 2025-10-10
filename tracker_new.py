@@ -8,24 +8,24 @@ cam = cv2.VideoCapture(1)
 frame_width = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-# # Define the codec and create VideoWriter object
-# fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+# Define the codec and create VideoWriter object
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 
-# # Output folder relative to Script
-# output_dir = "Aufnahmen"
-# # Create folder if not found
-# os.makedirs(output_dir, exist_ok=True)  
+# Output folder relative to Script
+output_dir = "Aufnahmen"
+# Create folder if not found
+os.makedirs(output_dir, exist_ok=True)  
 
-# # folder name with timestamp
-# timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-# output_path = os.path.join(output_dir, f"video_{timestamp}.mp4")
+# folder name with timestamp
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+output_path = os.path.join(output_dir, f"video_{timestamp}.mp4")
 
-# # Initialize VideoWriter (path, codec, FPS, size)
-# #out = cv2.VideoWriter(output_path, fourcc, 20.0, (frame_width, frame_height))
+# Initialize VideoWriter (path, codec, FPS, size)
+out = cv2.VideoWriter(output_path, fourcc, 20.0, (frame_width, frame_height))
 
 # Parameters for filtering contours (disk size)
 MIN_AREA = 250
-MAX_AREA = 750
+MAX_AREA = 500000
 
 #tracker = CentroidTracker(maxDisappeared=30)
 
@@ -46,9 +46,6 @@ while True:
     if not ret: break
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    #gray = cv2.equalizeHist(gray)  # Histogram equalization
-    #clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    #gray = clahe.apply(gray) # Histogram equalization via CLAHE
 
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
 
@@ -75,13 +72,35 @@ while True:
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
+
+        perimeter = cv2.arcLength(cnt, True)
+
+        print(f"Found contour: area={area:.1f}, perimeter={perimeter:.1f}")
+
+        if not (MIN_AREA < area < MAX_AREA):
+            print(f"  -> Rejected (area not in range {MIN_AREA}-{MAX_AREA})")
+            continue
+
+        if perimeter == 0:
+            print("  -> Rejected (perimeter = 0)")
+            continue
+
+        circularity = 4 * np.pi * area / (perimeter * perimeter)
+        print(f"  -> Circularity={circularity:.2f}")
+
+        if not (0.85 < circularity < 1.1):
+            print("  -> Rejected (circularity out of range)")
+            continue
+
+
         if MIN_AREA < area < MAX_AREA:
 
             # check how circular the contour is
             perimeter = cv2.arcLength(cnt, True)
             if perimeter == 0: continue
             circularity = 4 * np.pi * area / (perimeter * perimeter)
-            if not (0.85 < circularity < 1.1): continue
+
+            if not (0.8 < circularity < 1.2): continue
 
             (x, y), radius = cv2.minEnclosingCircle(cnt)
             center = (int(x), int(y))
@@ -89,8 +108,11 @@ while True:
 
             # Create mask for this contour
             mask = np.zeros(gray.shape, dtype="uint8")
-            cv2.drawContours(mask, [cnt], -1, 255, -1)
+            #cv2.drawContours(mask, [cnt], -1, 255, -1)
+            cv2.circle(mask, center, radius, 255, -1)
+
             mean_val = cv2.mean(gray, mask=mask)[0]
+            print(f"Mean={mean_val:.1f}")  # DEBUG
 
             if mean_val < 128:
                 color = "black"
@@ -133,8 +155,11 @@ while True:
     cv2.imshow("Blurred", blurred)
     cv2.imshow("Thresholded", thresh)
 
+    # Write the frame to the output file
+    out.write(frame)
+
     if cv2.waitKey(1) & 0xFF == ord('q'): break
 
 cam.release()
-#out.release()
+out.release()
 cv2.destroyAllWindows()
