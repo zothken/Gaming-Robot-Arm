@@ -1,8 +1,7 @@
 import cv2
 import numpy as np
-from tracker import CentroidTracker
-from utils.logger import logger
-from utils.visualization import draw_detections
+from utils.visualization import draw_detections, draw_ids
+
 
 # Detects circular figures in the frame, classifies them by color, and annotates the frame.
 def detect_figures(frame, tracker=None):
@@ -11,7 +10,7 @@ def detect_figures(frame, tracker=None):
 
     # Parameters for filtering contours (disk size)
     MIN_RADIUS = 20
-    MAX_RADIUS = 50
+    MAX_RADIUS = 30
 
     # Ensure block_size is odd and >=3
     THRESH_BLOCK = 49
@@ -29,7 +28,6 @@ def detect_figures(frame, tracker=None):
         THRESH_C
         )
 
-
     centroids = []
     colors = []
     black_count, white_count = 0, 0
@@ -38,7 +36,7 @@ def detect_figures(frame, tracker=None):
     circles = cv2.HoughCircles(blurred, 
         cv2.HOUGH_GRADIENT, 
         dp=1.2, minDist=20, 
-        param1=50, 
+        param1=80, 
         param2=30, 
         minRadius=MIN_RADIUS, 
         maxRadius=MAX_RADIUS
@@ -65,6 +63,11 @@ def detect_figures(frame, tracker=None):
                 white_count += 1
             colors.append(color)
 
+    if len(centroids) > 0:
+        sorted_data = sorted(zip(centroids, colors), key=lambda c: (c[0][0], c[0][1]))
+        centroids, colors = zip(*sorted_data)
+        centroids, colors = list(centroids), list(colors)
+
     if tracker is not None:
         tracker.update(centroids, colors)
 
@@ -72,14 +75,6 @@ def detect_figures(frame, tracker=None):
         return frame, gray, blurred, thresh
 
     draw_detections(frame, circles, colors, black_count, white_count)
-    
-    if tracker:
-        objects = tracker.update(centroids, colors)
-        for (objectID, (centroid, color)) in objects.items():
-            smoothed = np.mean(tracker.positions[objectID], axis=0).astype(int)
-            cv2.putText(frame, f"ID {objectID}", (smoothed[0] - 10, smoothed[1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-            cv2.circle(frame, tuple(smoothed), 4, (255, 255, 0), -1)
-
+    draw_ids(frame, tracker)
    
     return frame, gray, blurred, thresh

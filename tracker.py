@@ -3,7 +3,7 @@ from collections import OrderedDict
 
 
 class CentroidTracker:
-    def __init__(self, maxDisappeared=30, maxDistance=60):
+    def __init__(self, maxDisappeared=150, maxDistance=100):
         """
         Hybrid tracker combining time-based disappearance handling and distance-based matching.
 
@@ -14,7 +14,9 @@ class CentroidTracker:
         maxDisappeared (int): Number of frames an object can be missing before deregistration.
         maxDistance (float): Maximum distance for a valid match between centroids.
         """
-        self.nextObjectID = 0
+        self.nextBlackID = 1
+        self.nextWhiteID = 1
+
         self.objects = OrderedDict()
         self.colors = OrderedDict()
         self.disappeared = OrderedDict()
@@ -24,11 +26,20 @@ class CentroidTracker:
 
     def register(self, centroid, color):
         # Registers a new object with its centroid and color.
-        self.objects[self.nextObjectID] = centroid
-        self.colors[self.nextObjectID] = color
-        self.positions[self.nextObjectID] = [centroid]
-        self.disappeared[self.nextObjectID] = 0
-        self.nextObjectID += 1
+        if color == "black":
+            objectID = f"B{self.nextBlackID}"
+            self.nextBlackID += 1
+        elif color == "white":
+            objectID = f"W{self.nextWhiteID}"
+            self.nextWhiteID += 1
+        else:
+            # Fallback for unknown color
+            objectID = f"U{len(self.objects) + 1}"
+
+        self.objects[objectID] = centroid
+        self.colors[objectID] = color
+        self.positions[objectID] = [centroid]
+        self.disappeared[objectID] = 0
 
     def deregister(self, objectID):
         # Removes an object that has been missing for too long.
@@ -41,7 +52,6 @@ class CentroidTracker:
         # Updates tracked objects based on the latest detected centroids and their colors.
         if len(centroids) != len(colors):
             raise ValueError("Centroids and colors must have the same length")
-
 
         # No existing objects → register all new detections
         if len(self.objects) == 0:
@@ -65,6 +75,12 @@ class CentroidTracker:
             np.array(objectCentroids)[:, None] - np.array(centroids)[None, :], 
             axis=2
             )
+        
+        # Debug output
+        print("Distance matrix (pixels):")
+        print(D)
+        min_distances = D.min(axis=1)
+        print("Minimal distances for each object:", min_distances)
 
         rows = D.min(axis=1).argsort()
         cols = D.argmin(axis=1)[rows]
