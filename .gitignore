@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
 .venv
-uArm-Python-SDK-2.0
+
 Aufnahmen
 notes
+old
+
+logs/**
+*.mp4
+*.avi

@@ -13,14 +13,13 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from config import SAFE_Z, UARM_PORT
-from control import UArmController
+from config import PICK_Z, PLACE_Z, REST_POS, SAFE_Z, UARM_PORT
+from control import UArmController, WorkspaceError
 from utils.logger import logger
+from vision.figure_detector import detect_figures, estimate_assign_distance
+from vision.recording import open_camera
 
 H_FILE = ROOT / "data/calibration/cam_to_robot_homography.json"
-REST_POS = (1.0, 150.0, 100.0)
-PICK_Z = 10.0
-PLACE_Z = 15.0
 
 
 def load_homography() -> tuple[np.ndarray, dict[str, tuple[float, float]]]:
@@ -34,14 +33,62 @@ def img_to_robot(H: np.ndarray, u: float, v: float) -> tuple[float, float]:
     return float(x), float(y)
 
 
-def prompt_label(board_pixels: dict[str, tuple[float, float]], prompt: str) -> str | None:
+def prompt_label(
+    board_pixels: dict[str, tuple[float, float]],
+    prompt: str,
+    allowed_labels: set[str] | None = None,
+) -> str | None:
+    allowed = {lbl.upper() for lbl in allowed_labels} if allowed_labels is not None else None
+    allowed_hint = f"Erlaubt: {', '.join(sorted(allowed))}" if allowed else None
+
     while True:
         lbl = input(prompt).strip().upper()
         if lbl == "Q":
             return None
-        if lbl in board_pixels:
-            return lbl
-        print(f"Unbekanntes Label '{lbl}'. Erlaubt: {', '.join(sorted(board_pixels.keys()))}")
+        if lbl not in board_pixels:
+            print(f"Unbekanntes Label '{lbl}'. Erlaubt: {', '.join(sorted(board_pixels.keys()))}")
+            continue
+        if allowed is not None and lbl not in allowed:
+            hint = allowed_hint or "Keine verfuegbaren Positionen"
+            print(f"Label '{lbl}' momentan nicht zulaessig. {hint}")
+            continue
+        return lbl
+
+
+def detect_board_assignments(
+    board_pixels: dict[str, tuple[float, float]],
+    attempts: int = 4,
+) -> list[dict[str, object]]:
+    base_dist = estimate_assign_distance(board_pixels)
+    dist_steps = [base_dist, base_dist * 1.25, base_dist * 1.5, base_dist * 1.75]
+
+    try:
+        with open_camera() as cam:
+            for idx in range(min(attempts, len(dist_steps))):
+                ret, frame = cam.read()
+                if not ret:
+                    logger.warning("Kameraframe konnte nicht gelesen werden (Versuch %s).", idx + 1)
+                    continue
+
+                try:
+                    _, _, _, _, assignments = detect_figures(
+                        frame,
+                        board_coords=board_pixels,
+                        max_assign_dist=dist_steps[idx],
+                        return_assignments=True,
+                    )
+                except Exception:
+                    logger.exception("Fehler bei der Zuordnung der Figuren zum Brett.")
+                    return []
+
+                if assignments:
+                    return assignments
+
+    except RuntimeError as exc:
+        logger.warning("Kamera konnte nicht geoeffnet werden: %s", exc)
+        return []
+
+    return []
 
 
 def main() -> None:
@@ -65,12 +112,34 @@ def main() -> None:
         logger.info("Fahre in Ruheposition zu x=%.1f y=%.1f z=%.1f", *REST_POS)
         controller.move_to(*REST_POS)
 
-        print("Gib Start- und Ziel-Label ein (A1–C8). 'q' beendet.")
-        start_lbl = prompt_label(board_pixels, "Start-Position: ")
+        assignments = detect_board_assignments(board_pixels)
+        assignments = sorted(assignments, key=lambda a: a["label"])
+        occupied_labels = [a["label"] for a in assignments]
+        all_labels = sorted(board_pixels.keys())
+        if assignments:
+            formatted = ", ".join(f"{a['label']} ({a['color']})" for a in assignments)
+            print(f"Erkannte Figuren auf Positionen: {formatted}")
+            print(f"Waehle Start-Position aus: {', '.join(occupied_labels)}")
+        else:
+            print("Keine belegten Positionen erkannt.")
+            print(f"Start-Position frei waehlbar aus: {', '.join(all_labels)}")
+
+        start_allowed = set(occupied_labels) if occupied_labels else None
+        start_lbl = prompt_label(board_pixels, "Start-Position: ", allowed_labels=start_allowed)
         if start_lbl is None:
             logger.info("Abbruch durch Benutzer.")
             return
-        target_lbl = prompt_label(board_pixels, "Ziel-Position: ")
+
+        occupied_set = set(occupied_labels)
+        free_labels = sorted(lbl for lbl in board_pixels if lbl not in occupied_set and lbl != start_lbl)
+        if free_labels:
+            print(f"Freie Positionen (als Ziel moeglich): {', '.join(free_labels)}")
+        else:
+            print("Keine freien Positionen erkannt - Abbruch.")
+            logger.info("Keine freien Ziel-Positionen verfuegbar.")
+            return
+
+        target_lbl = prompt_label(board_pixels, "Ziel-Position: ", allowed_labels=set(free_labels))
         if target_lbl is None:
             logger.info("Abbruch durch Benutzer.")
             return
@@ -95,10 +164,14 @@ def main() -> None:
         # Stein ablegen
         controller.move_to(target_x, target_y, PLACE_Z)
         swift.set_pump(on=False)
+        controller.move_to(target_x, target_y, SAFE_Z)
 
         # Zur Ruheposition zurueckkehren
         controller.move_to(*REST_POS)
         logger.info("Bewegung abgeschlossen.")
+    except WorkspaceError as exc:
+        logger.error("Bewegung kann nicht ausgefuehrt werden: %s", exc)
+        print(f"Ziel ausserhalb des Arbeitsbereichs: {exc}")
     finally:
         controller.disconnect()
         print("Beendet.")

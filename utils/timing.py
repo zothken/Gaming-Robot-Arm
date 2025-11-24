@@ -1,7 +1,9 @@
 import time
 
+
 class FPSTracker:
-    """Simple FPS tracker to measure frame rate in a loop."""
+    """Einfacher FPS-Tracker zur Messung der Bildrate in einer Schleife."""
+
     def __init__(self):
         self.last_time = time.time()
         self.fps = 0.0
