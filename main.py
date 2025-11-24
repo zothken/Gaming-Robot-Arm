@@ -1,10 +1,12 @@
 import cv2
 from vision.recorder import init_camera, init_recorder, get_frame, release_resources
 from vision.figure_detector import detect_figures
-from tracker import CentroidTracker
+from vision.tracker import CentroidTracker
 from utils.logger import logger
 from utils.visualization import show_frames
 
+# Download .zip file of this project:
+# zip -r gaming-robot-arm-light.zip . -x ".venv/*" "uArm-Python-SDK-2.0/*" "__pycache__/*" "Aufnahmen/*"
 
 def main():
     logger.info("Starting Gaming Robot Arm System...")
