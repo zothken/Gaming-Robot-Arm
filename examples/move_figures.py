@@ -76,6 +76,7 @@ def detect_board_assignments(
                         board_coords=board_pixels,
                         max_assign_dist=dist_steps[idx],
                         return_assignments=True,
+                        debug_assignments=True,
                     )
                 except Exception:
                     logger.exception("Fehler bei der Zuordnung der Figuren zum Brett.")

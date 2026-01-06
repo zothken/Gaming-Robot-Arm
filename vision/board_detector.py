@@ -27,6 +27,69 @@ def angle_deg(x1, y1, x2, y2):
     return np.degrees(np.arctan2((y2 - y1), (x2 - x1)))
 
 
+def normalize_orientation_deg(angle):
+    """Bringt einen Winkel in den Bereich [-90, 90)."""
+    return ((angle + 90.0) % 180.0) - 90.0
+
+
+def estimate_board_rotation(segments):
+    """
+    Schaetzt die globale Drehung des Brettes anhand der Hough-Segmente.
+
+    Nutzt einen Double-Angle-Mittelwert, um Richtungen mit gleicher Orientierung
+    (180-Grad-Äquivalenz) zusammenzufassen. Gewichtung nach Segmentlaenge, damit
+    stabile Linien dominieren.
+    """
+    if segments is None or len(segments) == 0:
+        return 0.0
+
+    angles = []
+    weights = []
+    for (x1, y1, x2, y2) in segments:
+        ang = angle_deg(x1, y1, x2, y2)
+        ang = normalize_orientation_deg(ang)
+        w = np.hypot(x2 - x1, y2 - y1)
+        if w <= 1e-3:
+            continue
+        angles.append(ang)
+        weights.append(w)
+
+    if not weights:
+        return 0.0
+
+    ang_rad = np.deg2rad(np.array(angles, dtype=np.float32))
+    weights = np.array(weights, dtype=np.float32)
+    c = np.sum(weights * np.cos(2.0 * ang_rad))
+    s = np.sum(weights * np.sin(2.0 * ang_rad))
+    if abs(c) < 1e-6 and abs(s) < 1e-6:
+        return 0.0
+
+    dominant = 0.5 * np.arctan2(s, c)
+    return float(np.rad2deg(dominant))
+
+
+def rotate_points(pts, center, angle_deg):
+    """Rotiert eine Punktmenge um center um den angegebenen Winkel."""
+    if len(pts) == 0:
+        return np.empty((0, 2), dtype=np.float32)
+    pts_arr = np.asarray(pts, dtype=np.float32).reshape(-1, 2)
+    cx, cy = center
+    ang = np.deg2rad(angle_deg)
+    R = np.array([[np.cos(ang), -np.sin(ang)], [np.sin(ang), np.cos(ang)]], dtype=np.float32)
+    shifted = pts_arr - np.array([cx, cy], dtype=np.float32)
+    rotated = shifted @ R.T + np.array([cx, cy], dtype=np.float32)
+    return rotated
+
+
+def rotate_segments(segments, center, angle_deg):
+    """Rotiert alle Segmentendpunkte und liefert ein Array gleicher Form zurueck."""
+    if segments is None or len(segments) == 0:
+        return np.empty((0, 4), dtype=np.float32)
+    pts = np.asarray(segments, dtype=np.float32).reshape(-1, 2)
+    rotated = rotate_points(pts, center, angle_deg)
+    return rotated.reshape(-1, 4)
+
+
 def separate_segments_by_orientation(segments, tolerance_deg):
     """Teilt Segmentkoordinaten in nahezu horizontale und vertikale Gruppen nach Winkeltoleranz auf."""
     horizontals, verticals = [], []
@@ -86,20 +149,29 @@ def fit_line_from_segments(segments, vertical=False):
     m, b = np.linalg.lstsq(Y, pts[:, 0], rcond=None)[0]
     return Line('V', float(m), float(b))
 
-def draw_infinite_line(img, line, color, thickness=2):
-    """Zeichnet die berechnete Linie als unendliche Verlaengerung quer durch das Bild."""
+def draw_infinite_line(img, line, color, thickness=2, *, rotation_deg=0.0, center=None):
+    """
+    Zeichnet die berechnete Linie als unendliche Verlaengerung quer durch das Bild.
+    rotation_deg/center erlauben das Zurueckrotieren aus einem normalisierten Koordinatensystem.
+    """
     h, w = img.shape[:2]
     m, b = line.slope, line.intercept
     if line.orientation == 'H':
         x1, x2 = 0, w - 1
-        y1 = int(round(m * x1 + b))
-        y2 = int(round(m * x2 + b))
-        cv2.line(img, (x1, y1), (x2, y2), color, thickness)
+        y1 = float(m * x1 + b)
+        y2 = float(m * x2 + b)
     else:
         y1, y2 = 0, h - 1
-        x1 = int(round(m * y1 + b))
-        x2 = int(round(m * y2 + b))
-        cv2.line(img, (x1, y1), (x2, y2), color, thickness)
+        x1 = float(m * y1 + b)
+        x2 = float(m * y2 + b)
+
+    pts = np.array([[x1, y1], [x2, y2]], dtype=np.float32)
+    if center is not None and abs(rotation_deg) > 1e-3:
+        pts = rotate_points(pts, center, rotation_deg)
+
+    p1 = tuple(np.round(pts[0]).astype(int))
+    p2 = tuple(np.round(pts[1]).astype(int))
+    cv2.line(img, p1, p2, color, thickness)
 
 def line_anchor_value(line):
     """Sortier-Skalar je Linie: y@x=0 (horizontale) bzw. x@y=0 (vertikale)."""
@@ -198,12 +270,22 @@ def detect_board_positions(frame_bgr, debug=True):
     for (x1, y1, x2, y2) in segs[:, 0]:
         cv2.line(annotated, (x1, y1), (x2, y2), (0, 255, 0), 1)
 
+    segments = segs[:, 0].astype(np.float32)
+    image_center = (0.5 * W_img, 0.5 * H_img)
+    board_rotation = estimate_board_rotation(segments)
+
+    # Koordinatensystem so drehen, dass das Brett möglichst achsenparallel liegt
+    segments_aligned = rotate_segments(segments, image_center, -board_rotation)
+    if debug:
+        cv2.putText(annotated, f"rot {board_rotation:+.1f} deg", (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
     # 3) Winkelbasierte Selektion: nahezu horizontal / vertikal
-    horiz_segs, vert_segs = separate_segments_by_orientation(segs[:, 0], tolerance_deg=7.0)
+    horiz_segs, vert_segs = separate_segments_by_orientation(segments_aligned, tolerance_deg=7.0)
 
     # Sanft lockern, falls nötig
     if len(horiz_segs) < 7 or len(vert_segs) < 7:
-        horiz_segs, vert_segs = separate_segments_by_orientation(segs[:, 0], tolerance_deg=10.0)
+        horiz_segs, vert_segs = separate_segments_by_orientation(segments_aligned, tolerance_deg=10.0)
 
     # 4) 1D-Histogramm der Segmentlagen (Mittelpunkte) → 7 Peaks
     y_mids = [0.5 * (y1 + y2) for (_, y1, _, y2) in horiz_segs]
@@ -235,14 +317,14 @@ def detect_board_positions(frame_bgr, debug=True):
         if len(g) == 0: continue
         ln = fit_line_from_segments(g, vertical=False)
         H_lines.append(ln)
-        draw_infinite_line(annotated, ln, (255, 255, 0), 1)  # cyan: fit je Peak
+        draw_infinite_line(annotated, ln, (255, 255, 0), 1, rotation_deg=board_rotation, center=image_center)  # cyan: fit je Peak
 
     V_lines = []
     for g in V_groups:
         if len(g) == 0: continue
         ln = fit_line_from_segments(g, vertical=True)
         V_lines.append(ln)
-        draw_infinite_line(annotated, ln, (255, 255, 0), 1)
+        draw_infinite_line(annotated, ln, (255, 255, 0), 1, rotation_deg=board_rotation, center=image_center)
 
     # Nach Ankerwert sortieren (oben→unten, links→rechts)
     H_lines = sorted(H_lines, key=line_anchor_value)
@@ -253,62 +335,61 @@ def detect_board_positions(frame_bgr, debug=True):
     V_lines = ensure_lines(V_lines, expected=7, axis='V')
 
     # Finale Linien (blau)
-    for ln in H_lines: draw_infinite_line(annotated, ln, (255, 0, 0), 2)
-    for ln in V_lines: draw_infinite_line(annotated, ln, (255, 0, 0), 2)
+    for ln in H_lines: draw_infinite_line(annotated, ln, (255, 0, 0), 2, rotation_deg=board_rotation, center=image_center)
+    for ln in V_lines: draw_infinite_line(annotated, ln, (255, 0, 0), 2, rotation_deg=board_rotation, center=image_center)
 
-   # 7) 24 gültige Mühle-Positionen --------------------
+    # 7) 24 gültige Mühle-Positionen --------------------
     # Linien-Indices:
     # H0–H6, V0–V6 (da Python 0-indiziert)
     outer = (0, 6)
     middle = (1, 5)
     inner = (2, 4)
-    center = 3  # mittlere Verbindungsachse
+    center_idx = 3  # mittlere Verbindungsachse
 
-    positions = []
+    positions_aligned = []
 
     # --- Äußeres Quadrat (8 Punkte) ---
-    positions += [
+    positions_aligned += [
         intersect(H_lines[outer[0]], V_lines[outer[0]]),  # oben links
         intersect(H_lines[outer[0]], V_lines[outer[1]]),  # oben rechts
         intersect(H_lines[outer[1]], V_lines[outer[0]]),  # unten links
         intersect(H_lines[outer[1]], V_lines[outer[1]]),  # unten rechts
-        intersect(H_lines[outer[0]], V_lines[center]),    # Mitte oben
-        intersect(H_lines[outer[1]], V_lines[center]),    # Mitte unten
-        intersect(H_lines[center], V_lines[outer[0]]),    # Mitte links
-        intersect(H_lines[center], V_lines[outer[1]])     # Mitte rechts
+        intersect(H_lines[outer[0]], V_lines[center_idx]),    # Mitte oben
+        intersect(H_lines[outer[1]], V_lines[center_idx]),    # Mitte unten
+        intersect(H_lines[center_idx], V_lines[outer[0]]),    # Mitte links
+        intersect(H_lines[center_idx], V_lines[outer[1]])     # Mitte rechts
     ]
 
     # --- Mittleres Quadrat (8 Punkte) ---
-    positions += [
+    positions_aligned += [
         intersect(H_lines[middle[0]], V_lines[middle[0]]),
         intersect(H_lines[middle[0]], V_lines[middle[1]]),
         intersect(H_lines[middle[1]], V_lines[middle[0]]),
         intersect(H_lines[middle[1]], V_lines[middle[1]]),
-        intersect(H_lines[middle[0]], V_lines[center]),
-        intersect(H_lines[middle[1]], V_lines[center]),
-        intersect(H_lines[center], V_lines[middle[0]]),
-        intersect(H_lines[center], V_lines[middle[1]])
+        intersect(H_lines[middle[0]], V_lines[center_idx]),
+        intersect(H_lines[middle[1]], V_lines[center_idx]),
+        intersect(H_lines[center_idx], V_lines[middle[0]]),
+        intersect(H_lines[center_idx], V_lines[middle[1]])
     ]
 
     # --- Inneres Quadrat (8 Punkte) ---
-    positions += [
+    positions_aligned += [
         intersect(H_lines[inner[0]], V_lines[inner[0]]),
         intersect(H_lines[inner[0]], V_lines[inner[1]]),
         intersect(H_lines[inner[1]], V_lines[inner[0]]),
         intersect(H_lines[inner[1]], V_lines[inner[1]]),
-        intersect(H_lines[inner[0]], V_lines[center]),
-        intersect(H_lines[inner[1]], V_lines[center]),
-        intersect(H_lines[center], V_lines[inner[0]]),
-        intersect(H_lines[center], V_lines[inner[1]])
+        intersect(H_lines[inner[0]], V_lines[center_idx]),
+        intersect(H_lines[inner[1]], V_lines[center_idx]),
+        intersect(H_lines[center_idx], V_lines[inner[0]]),
+        intersect(H_lines[center_idx], V_lines[inner[1]])
     ]
 
 
     # === Koordinatensystem A1–C8 auf Basis der 7+7 Linien ===
-    # Indizes: H0..H6 (oben→unten), V0..V6 (links→rechts); center = 3
+    # Indizes: H0..H6 (oben→unten), V0..V6 (links→rechts); center_idx = 3
     outer  = (0, 6)
     middle = (1, 5)
     inner  = (2, 4)
-    center = 3
 
     def quad_positions(H_lines, V_lines, iT, iB, iL, iR, iC):
         """Liefert acht Eck- und Kantenpunkte eines Quadrats in festgelegter Reihenfolge."""
@@ -321,7 +402,7 @@ def detect_board_positions(frame_bgr, debug=True):
             intersect(H_lines[iB], V_lines[iC]),    # 6
             intersect(H_lines[iB], V_lines[iL]),    # 7
             intersect(H_lines[iC], V_lines[iL]),    # 8
-    ]
+        ]
 
     def build_coords_dict(H_lines, V_lines):
         """Baut ein Dictionary von Spielfeld-Labels auf die berechneten Koordinaten."""
@@ -332,7 +413,7 @@ def detect_board_positions(frame_bgr, debug=True):
             middle + (middle[0], middle[1]),
             inner  + (inner[0],  inner[1])]
         ):
-            pts = quad_positions(H_lines, V_lines, iT, iB, iL, iR, center)
+            pts = quad_positions(H_lines, V_lines, iT, iB, iL, iR, center_idx)
             for i, (x,y) in enumerate(pts, start=1):
                 coords[f"{label}{i}"] = (int(x), int(y))
         return coords
@@ -346,7 +427,20 @@ def detect_board_positions(frame_bgr, debug=True):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 164, 0), 2, cv2.LINE_AA)
         return out
 
-    coords = build_coords_dict(H_lines, V_lines)
+    coords_aligned = build_coords_dict(H_lines, V_lines)
+
+    def rotate_coords_dict(coords_dict, angle_deg, center):
+        if not coords_dict:
+            return {}
+        pts = np.array(list(coords_dict.values()), dtype=np.float32)
+        rotated = rotate_points(pts, center, angle_deg)
+        keys = list(coords_dict.keys())
+        return {k: (int(round(p[0])), int(round(p[1]))) for k, p in zip(keys, rotated)}
+
+    coords = rotate_coords_dict(coords_aligned, board_rotation, image_center)
+    positions_rot = rotate_points(positions_aligned, image_center, board_rotation)
+    positions = [(int(round(x)), int(round(y))) for x, y in positions_rot]
+
     annotated = draw_labels(annotated, coords)   # annotated ist dein Debug-Frame
     print(f"{len(coords)} Brettpositionen (sollte 24 sein)")
 

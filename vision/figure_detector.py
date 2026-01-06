@@ -3,13 +3,14 @@ from typing import Dict, List, Sequence, Tuple
 import cv2
 import numpy as np
 
+from utils.logger import logger
 from vision.visualization import draw_detections, draw_ids
 
 
 def estimate_assign_distance(
     board_coords: Dict[str, Tuple[int, int]],
     *,
-    factor: float = 0.35,
+    factor: float = 0.50,
     min_px: float = 30.0,
     max_px: float = 140.0,
 ) -> float:
@@ -100,6 +101,7 @@ def detect_figures(
     max_assign_dist: float | None = None,
     return_assignments: bool = False,
     draw_assignments: bool = False,
+    debug_assignments: bool = False,
 ):
     """
     Erkennt runde Figuren im Bild, klassifiziert sie nach Farbe und annotiert den Frame.
@@ -110,6 +112,7 @@ def detect_figures(
     - draw_assignments: schreibt die Feld-Labels in das Frame (ohne Tracker-ID).
     - max_assign_dist: Abstandsschwelle in Pixeln; None nutzt einen automatisch
       aus den Brettabstaenden abgeleiteten Wert.
+    - debug_assignments: Loggt erkannte Kreise, naechste Labels und Zuordnungen.
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
@@ -186,6 +189,32 @@ def detect_figures(
             board_coords,
             max_dist_px=max_assign_dist,
         )
+
+        if debug_assignments:
+            labels = list(board_coords.keys())
+            coords_arr = np.array(list(board_coords.values()), dtype=np.float32)
+            if centroids:
+                nearest = []
+                for c in centroids:
+                    dists = np.linalg.norm(coords_arr - np.array(c, dtype=np.float32), axis=1)
+                    idx = int(np.argmin(dists))
+                    nearest.append((labels[idx], float(dists[idx])))
+                logger.info(
+                    "Detection debug: %s Kreise, Farben=%s, naechste Labels=%s",
+                    len(centroids),
+                    colors,
+                    nearest,
+                )
+            else:
+                logger.info("Detection debug: keine Kreise erkannt.")
+
+            if assignments:
+                logger.info("Detection debug: Zuordnungen=%s", assignments)
+            else:
+                logger.info(
+                    "Detection debug: Keine Zuordnungen bei max_dist=%.1fpx",
+                    max_assign_dist if max_assign_dist is not None else float("nan"),
+                )
 
         if draw_assignments and assignments:
             for a in assignments:
