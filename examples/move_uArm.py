@@ -14,24 +14,27 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from config import PICK_Z, PLACE_Z, SAFE_Z, UARM_CALLBACK_THREADS, UARM_PORT
-from control import WorkspaceError
+from gaming_robot_arm.calibration.mill_default_calibration import get_mill_uarm_positions
+from gaming_robot_arm.config import PICK_Z, PLACE_Z, SAFE_Z, UARM_CALLBACK_THREADS, UARM_PORT
 from gaming_robot_arm import VisionControlRuntime
-from utils.logger import logger
-from vision.recording import recording_session
+from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.vision.recording import recording_session
 
-H_FILE = ROOT / "data/calibration/cam_to_robot_homography.json"
+H_FILE = ROOT / "gaming_robot_arm" / "calibration" / "cam_to_robot_homography.json"
 
 
 def load_homography() -> tuple[np.ndarray | None, dict[str, tuple[float, float]]]:
     if not H_FILE.exists():
-        logger.warning("Homography-Datei nicht gefunden: %s. [c]-Befehle deaktiviert.", H_FILE)
+        logger.warning(
+            "Homography-Datei nicht gefunden: %s. Pixel->Roboter-Mapping via Homography deaktiviert.",
+            H_FILE,
+        )
         return None, {}
 
     data = json.loads(H_FILE.read_text(encoding="utf-8"))
     board_pixels = data.get("board_pixels", {})
     if not board_pixels:
-        logger.warning("Homography enthaelt keine board_pixels. [c]-Befehle deaktiviert.")
+        logger.warning("Homography enthaelt keine board_pixels. Pixel->Roboter-Mapping deaktiviert.")
         return None, {}
 
     return np.array(data["H"], dtype=np.float64), board_pixels
@@ -44,34 +47,53 @@ def img_to_robot(H: np.ndarray, u: float, v: float) -> tuple[float, float]:
 
 
 def handle_board_move(
+    board_robot: dict[str, tuple[float, float]],
     H: np.ndarray | None,
     board_pixels: dict[str, tuple[float, float]],
     controller,
 ) -> bool:
-    if H is None or not board_pixels:
+    if not board_robot and (H is None or not board_pixels):
         logger.error("Keine Brett-Kalibrierung verfuegbar. Bitte Kalibrierung ausfuehren.")
         return False
 
     lbl = input("Brett-Position (A1-C8, leer=Abbrechen): ").strip().upper()
     if not lbl:
         return False
+
+    if board_robot:
+        if lbl not in board_robot:
+            logger.warning(
+                "Unbekanntes Label '%s'. Verfuegbare Labels: %s",
+                lbl,
+                ", ".join(sorted(board_robot.keys())),
+            )
+            return False
+        x, y = board_robot[lbl]
+        logger.info("Fahre zu %s → Roboter=(%.1f, %.1f, %.1f)", lbl, x, y, SAFE_Z)
+        controller.move_to(x, y, SAFE_Z)
+        return True
+
+    if H is None or not board_pixels:
+        logger.error("Keine Brett-Kalibrierung verfuegbar. Bitte Kalibrierung ausfuehren.")
+        return False
     if lbl not in board_pixels:
-        logger.warning("Unbekanntes Label '%s'. Verfuegbare Labels: %s", lbl, ", ".join(sorted(board_pixels.keys())))
+        logger.warning(
+            "Unbekanntes Label '%s'. Verfuegbare Labels: %s",
+            lbl,
+            ", ".join(sorted(board_pixels.keys())),
+        )
         return False
 
     u, v = board_pixels[lbl]
     x, y = img_to_robot(H, u, v)
-    logger.info("Fahre zu %s → Pixel=(%.1f, %.1f) → Robot=(%.1f, %.1f, %.1f)", lbl, u, v, x, y, SAFE_Z)
-    try:
-        controller.move_to(x, y, SAFE_Z)
-    except WorkspaceError as exc:
-        logger.error("Position %s ausserhalb des Arbeitsbereichs: %s", lbl, exc)
-        return False
+    logger.info("Fahre zu %s → Pixel=(%.1f, %.1f) → Roboter=(%.1f, %.1f, %.1f)", lbl, u, v, x, y, SAFE_Z)
+    controller.move_to(x, y, SAFE_Z)
     return True
 
 
 def main(port: str | None = UARM_PORT) -> None:
     H, board_pixels = load_homography()
+    board_robot = get_mill_uarm_positions()
 
     with VisionControlRuntime(display=False) as runtime:
         controller = runtime.ensure_controller(
@@ -115,7 +137,7 @@ def main(port: str | None = UARM_PORT) -> None:
                 logger.info("Aufnahme deaktiviert.")
 
             logger.info(
-                "Steuerung bereit: [c] Move to Coordinate, [p] Move to position, [z] Toggle Z, [s] Suction, [r] Reset, [q] Quit."
+                "Steuerung bereit: [c] Zu Koordinate fahren, [p] Zu Brettposition fahren, [z] Z umschalten, [s] Saugen, [r] Reset, [q] Beenden."
             )
 
             while True:
@@ -159,7 +181,7 @@ def main(port: str | None = UARM_PORT) -> None:
                     continue
 
                 if cmd == "p":
-                    moved = handle_board_move(H, board_pixels, controller)
+                    moved = handle_board_move(board_robot, H, board_pixels, controller)
                     if moved:
                         last_z_position = SAFE_Z
                         stored_prev_z = last_z_position
@@ -196,7 +218,7 @@ def main(port: str | None = UARM_PORT) -> None:
                 if cmd == "s":
                     pump_on = not pump_on
                     swift.set_pump(on=pump_on)
-                    logger.info("Suction %s.", "ON" if pump_on else "OFF")
+                    logger.info("Saugen %s.", "AN" if pump_on else "AUS")
                     continue
 
                 if cmd == "r":

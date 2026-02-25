@@ -1,0 +1,4 @@
+# Optionaler ML-Stack fuer neuronale Trainings-/Inferenzskripte.
+# Auf Linux-Hosts ohne GPU bevorzugen:
+#   python -m pip install --index-url https://download.pytorch.org/whl/cpu -r requirements-ml.txt
+torch>=2.5

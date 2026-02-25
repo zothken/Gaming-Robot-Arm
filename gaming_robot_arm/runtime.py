@@ -4,22 +4,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import cv2
 import numpy as np
 
-from config import CAMERA_INDEX
-from tracker import CentroidTracker
-from utils.logger import logger
-from vision.figure_detector import detect_figures
-from vision.recording import recording_session
-from vision.visualization import show_frames
+from gaming_robot_arm.config import CAMERA_INDEX
+from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.vision.figure_detector import detect_figures
+from gaming_robot_arm.vision.recording import recording_session
+from gaming_robot_arm.vision.visualization import show_frames
 
-from control import UArmController
+from gaming_robot_arm.control import UArmController
 
-FrameHandler = Callable[["VisionArtifacts", CentroidTracker, Optional[UArmController]], None]
-StopCondition = Callable[[CentroidTracker, Optional[UArmController]], bool]
+FrameHandler = Callable[["VisionArtifacts", Optional[Any], Optional[UArmController]], None]
+StopCondition = Callable[[Optional[Any], Optional[UArmController]], bool]
 
 
 @dataclass(slots=True)
@@ -38,12 +37,12 @@ class VisionControlRuntime:
     def __init__(
         self,
         *,
-        tracker: Optional[CentroidTracker] = None,
+        tracker: Optional[Any] = None,
         controller: Optional[UArmController] = None,
         frame_handlers: Optional[Iterable[FrameHandler]] = None,
         display: bool = True,
     ) -> None:
-        self.tracker = tracker or CentroidTracker()
+        self.tracker = tracker
         self.controller = controller
         self.display = display
         self._frame_handlers = list(frame_handlers or [])
@@ -96,7 +95,7 @@ class VisionControlRuntime:
 
         Liefert den Pfad der aufgezeichneten Videodatei oder None bei fehlender Aufzeichnung.
         """
-        logger.info("Starting Gaming Robot Arm runtime on camera index %s.", camera_index)
+        logger.info("Starte Gaming-Robot-Arm-Laufzeit auf Kamera-Index %s.", camera_index)
 
         try:
             with recording_session(camera_index=camera_index) as session:
@@ -106,7 +105,7 @@ class VisionControlRuntime:
                     try:
                         frame = session.read()
                     except RuntimeError as exc:
-                        logger.warning("Stopping capture due to camera error: %s", exc)
+                        logger.warning("Beende Aufnahme wegen Kamerafehler: %s", exc)
                         break
 
                     processed, gray, blurred, thresh = detect_figures(frame, tracker=self.tracker)
@@ -120,10 +119,10 @@ class VisionControlRuntime:
                     if self.display:
                         show_frames(
                             {
-                                "Grayscale": gray,
-                                "Blurred": blurred,
-                                "Thresholded": thresh,
-                                "Processed": processed,
+                                "Graustufen": gray,
+                                "Weichgezeichnet": blurred,
+                                "Schwellwert": thresh,
+                                "Verarbeitet": processed,
                             }
                         )
 
@@ -131,23 +130,23 @@ class VisionControlRuntime:
                     self._notify_handlers(artifacts)
 
                     if stop_condition and stop_condition(self.tracker, self.controller):
-                        logger.info("Stop condition triggered; exiting runtime loop.")
+                        logger.info("Stoppbedingung ausgeloest; beende Laufzeitschleife.")
                         break
 
                     if self.display and stop_key:
                         key = cv2.waitKey(1)
                         if key & 0xFF == ord(stop_key):
-                            logger.info("Exit requested by user via key '%s'.", stop_key)
+                            logger.info("Beenden per Taste '%s' durch Benutzer angefordert.", stop_key)
                             break
         except RuntimeError as exc:
-            logger.error("Unable to start recording session: %s", exc)
+            logger.error("Konnte Aufnahmesitzung nicht starten: %s", exc)
             self._last_recording = None
             return None
 
         if self._last_recording:
-            logger.info("Recording finished. Video stored at %s", self._last_recording)
+            logger.info("Aufnahme beendet. Video gespeichert unter %s", self._last_recording)
         else:
-            logger.info("Recording finished without video output.")
+            logger.info("Aufnahme beendet ohne Videoausgabe.")
 
         return self._last_recording
 
@@ -156,5 +155,5 @@ class VisionControlRuntime:
         for handler in self._frame_handlers:
             try:
                 handler(artifacts, self.tracker, self.controller)
-            except Exception:  # pragma: no cover - handler failures should not stop the loop
-                logger.exception("Frame handler %r raised an exception; continuing.", handler)
+            except Exception:  # pragma: no cover - Handler-Fehler sollen die Schleife nicht stoppen
+                logger.exception("Frame-Handler %r hat eine Ausnahme ausgeloest; mache weiter.", handler)

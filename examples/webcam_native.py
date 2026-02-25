@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Open a connected webcam at its default (native) resolution and show the feed.
-No project imports or dependencies beyond OpenCV.
+Oeffnet eine verbundene Webcam in nativer Aufloesung und zeigt den Stream.
+Keine Projekt-Imports oder Abhaengigkeiten ausser OpenCV.
 """
 
 import argparse
@@ -17,7 +17,7 @@ def _resolve_backend(cv2, backend_name: str):
         "v4l2": cv2.CAP_V4L2,
     }
     if backend_name not in backends:
-        raise ValueError(f"Unknown backend: {backend_name}")
+        raise ValueError(f"Unbekanntes Backend: {backend_name}")
     if backend_name == "auto":
         if sys.platform.startswith("win"):
             return cv2.CAP_MSMF
@@ -86,63 +86,63 @@ def _detect_cameras(cv2, scan_max: int, backend):
 
 
 def _prompt_for_index(available):
-    print("Multiple webcams detected:")
+    print("Mehrere Webcams erkannt:")
     for idx, width, height in available:
         print(f"  [{idx}] {width}x{height}")
     while True:
-        choice = input("Select camera index: ").strip()
+        choice = input("Kamera-Index waehlen: ").strip()
         try:
             idx = int(choice)
         except ValueError:
-            print("Please enter a valid integer index.")
+            print("Bitte einen gueltigen ganzzahligen Index eingeben.")
             continue
         if any(idx == item[0] for item in available):
             return idx
-        print("Index not in detected list. Try again.")
+        print("Index nicht in der erkannten Liste. Bitte erneut versuchen.")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Open a webcam at its default/native resolution and show the feed."
+        description="Oeffnet eine Webcam in nativer Aufloesung und zeigt den Stream."
     )
     parser.add_argument(
         "--index",
         type=int,
         default=None,
-        help="Camera index (if omitted, detect and prompt when multiple are found)",
+        help="Kamera-Index (wenn weggelassen: erkennen und bei mehreren Auswahl abfragen)",
     )
     parser.add_argument(
         "--scan-max",
         type=int,
         default=10,
-        help="How many indices to probe when auto-detecting (default: 10)",
+        help="Wie viele Indizes bei Auto-Erkennung geprueft werden (Standard: 10)",
     )
     parser.add_argument(
         "--backend",
         choices=["auto", "any", "dshow", "msmf", "v4l2"],
         default="auto",
-        help="Video backend to use (default: auto)",
+        help="Zu verwendendes Video-Backend (Standard: auto)",
     )
     args = parser.parse_args()
 
     try:
         import cv2  # type: ignore
     except Exception as exc:  # pragma: no cover - runtime dependency
-        print("OpenCV is required. Install with: pip install opencv-python", file=sys.stderr)
-        print(f"Import error: {exc}", file=sys.stderr)
+        print("OpenCV wird benoetigt. Installation: pip install opencv-python", file=sys.stderr)
+        print(f"Import-Fehler: {exc}", file=sys.stderr)
         return 1
 
     backend = _resolve_backend(cv2, args.backend)
     scan_backend = backend
     if backend == cv2.CAP_DSHOW and sys.platform.startswith("win"):
-        # DSHOW can emit "can't be used to capture by index" warnings during scans.
+        # DSHOW kann beim Scannen indexbezogene Capture-Warnungen ausgeben.
         scan_backend = cv2.CAP_MSMF
 
     selected_index = args.index
     if selected_index is None:
         available = _detect_cameras(cv2, args.scan_max, scan_backend)
         if not available:
-            print("No webcams detected.", file=sys.stderr)
+            print("Keine Webcams erkannt.", file=sys.stderr)
             return 2
         if len(available) == 1:
             selected_index = available[0][0]
@@ -151,32 +151,32 @@ def main() -> int:
 
     cap, used_backend = _open_capture_with_fallback(cv2, selected_index, backend)
     if cap is None or not cap.isOpened():
-        print(f"Could not open webcam at index {selected_index}", file=sys.stderr)
+        print(f"Konnte Webcam mit Index {selected_index} nicht oeffnen", file=sys.stderr)
         return 2
     if used_backend != backend:
         print(
-            f"Falling back to backend '{_backend_label(cv2, used_backend)}'.",
+            f"Weiche auf Backend '{_backend_label(cv2, used_backend)}' aus.",
             file=sys.stderr,
         )
 
-    # Request 1920x1080; camera/driver may choose the closest supported mode.
+    # Fordert 1920x1080 an; Kamera/Treiber koennen den naechstliegenden Modus waehlen.
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
-    # Grab one frame to confirm the actual resolution delivered by the camera.
+    # Liest einen Frame zur Bestimmung der tatsaechlichen Aufloesung.
     ok, frame = cap.read()
     if not ok or frame is None:
-        print("Could not read a frame from the webcam.", file=sys.stderr)
+        print("Konnte keinen Frame von der Webcam lesen.", file=sys.stderr)
         cap.release()
         return 3
 
     height, width = frame.shape[:2]
     print(
-        f"Webcam opened at {width}x{height} "
+        f"Webcam geoeffnet mit {width}x{height} "
         f"(backend: {_backend_label(cv2, used_backend)})"
     )
 
-    window_name = "Webcam (press q to quit)"
+    window_name = "Webcam (q zum Beenden)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     while True:

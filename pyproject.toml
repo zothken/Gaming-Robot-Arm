@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gaming-robot-arm"
+version = "0.1.0"
+description = "Steuerungs- und Vision-Werkzeuge fuer den Gaming Robot Arm."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy==2.2.6",
+    "opencv-python==4.12.0.88",
+    "pyserial>=3.0",
+]
+
+[project.optional-dependencies]
+ml = [
+    "torch>=2.5",
+]
+ui = [
+    "PySide6>=6.6",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gaming_robot_arm*"]

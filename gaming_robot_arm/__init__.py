@@ -1,5 +1,17 @@
-"""Top-level package exports for the gaming robot arm runtime."""
+"""Paket-Exporte fuer die Gaming-Robot-Arm-Laufzeit."""
 
-from .runtime import VisionControlRuntime
+try:
+    from .runtime import VisionControlRuntime
+except ModuleNotFoundError as exc:
+    _runtime_import_error = exc
+
+    class VisionControlRuntime:  # type: ignore[no-redef]
+        """Laufzeit-Platzhalter, der bei Nutzung einen klaren Abhaengigkeitsfehler wirft."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise ModuleNotFoundError(
+                "VisionControlRuntime benoetigt optionale Laufzeitabhaengigkeiten "
+                "(zum Beispiel OpenCV). Bitte zuerst die Projektanforderungen installieren."
+            ) from _runtime_import_error
 
 __all__ = ["VisionControlRuntime"]

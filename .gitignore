@@ -1,11 +1,44 @@
+# Python-Bytecode-Cache
 __pycache__/
+
+# Kompilierter Python-Bytecode
 *.pyc
+
+# Lokale virtuelle Umgebung
 .venv
 
+# Python-Paket-Metadaten
+gaming_robot_arm.egg-info
+
+# Lokale Aufnahmen
 Aufnahmen
+
+# Diagramm-Exporte
+UML
+
+# Persoenliche Notizen
 notes
+
+# Archivierte Dateien
 old
 
+# Logs
 logs/**
+logs/
+
+# Trainings-/Datenartefakte
+data/
+models/checkpoints/
+models/selfplay/
+
+# Videoaufnahmen
 *.mp4
+
+# Videoaufnahmen
 *.avi
+
+# Kalibrierungsausgabe
+calibration/board_pixels.json
+
+# Kalibrierungsausgabe
+calibration/cam_to_robot_homography.json
