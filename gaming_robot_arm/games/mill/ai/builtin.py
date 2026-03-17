@@ -8,9 +8,9 @@ from typing import Sequence
 from typing import Literal
 
 from gaming_robot_arm.games.common.interfaces import Move, Player
-from gaming_robot_arm.games.mill.board import ADJACENT, BOARD_LABELS, MILLS
-from gaming_robot_arm.games.mill.rules import MillRules, count_pieces, other_player, state_signature
-from gaming_robot_arm.games.mill.state import MillState
+from ..core.board import ADJACENT, BOARD_LABELS, MILLS
+from ..core.rules import MillRules, count_pieces, other_player, phase_for_player, state_signature
+from ..core.state import MillState
 
 
 _WIN_SCORE = 1_000_000.0
@@ -138,7 +138,8 @@ class AlphaBetaMillAI:
             raise ValueError("Keine legalen Zuege verfuegbar.")
 
         self._tt.clear()
-        ordered_moves = sorted(legal_moves, key=lambda move: (move.capture is None, _move_sort_key(move)))
+        candidate_moves = self._prefer_safe_flying_mill_closures(state, rules, legal_moves)
+        ordered_moves = sorted(candidate_moves, key=lambda move: (move.capture is None, _move_sort_key(move)))
 
         best_score = -_INF
         best_moves: list[Move] = []
@@ -164,6 +165,28 @@ class AlphaBetaMillAI:
             return self._rng.choice(best_moves)
 
         return min(best_moves, key=_move_sort_key)
+
+    def _prefer_safe_flying_mill_closures(
+        self,
+        state: MillState,
+        rules: MillRules,
+        legal_moves: list[Move],
+    ) -> list[Move]:
+        if phase_for_player(state, state.to_move, settings=rules.settings) != "flying":
+            return legal_moves
+
+        closing_moves = [move for move in legal_moves if move.capture is not None]
+        if not closing_moves:
+            return legal_moves
+
+        safe_closing_moves: list[Move] = []
+        for move in closing_moves:
+            next_state = rules.apply_move(state, move)
+            opponent = next_state.to_move
+            if not self._has_immediate_winning_reply(next_state, rules, opponent):
+                safe_closing_moves.append(move)
+
+        return safe_closing_moves or legal_moves
 
     def _negamax(
         self,
@@ -289,6 +312,18 @@ class AlphaBetaMillAI:
     def _mobility(self, state: MillState, rules: MillRules, player: Player) -> int:
         query_state = self._with_to_move(state, player)
         return len(rules.legal_moves(query_state))
+
+    @staticmethod
+    def _has_immediate_winning_reply(state: MillState, rules: MillRules, player: Player) -> bool:
+        if state.to_move != player:
+            return False
+
+        for move in rules.legal_moves(state):
+            reply_state = rules.apply_move(state, move)
+            if rules.is_terminal(reply_state) and rules.winner(reply_state) == player:
+                return True
+
+        return False
 
 
 __all__ = ["AlphaBetaMillAI", "HeuristicMillAI"]

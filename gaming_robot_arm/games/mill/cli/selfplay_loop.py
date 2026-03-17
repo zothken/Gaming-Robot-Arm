@@ -18,8 +18,11 @@ import shutil
 import subprocess
 import sys
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
+WATCHDOG_MODULE = "gaming_robot_arm.games.mill.cli.train_watchdog"
+SELFPLAY_MODULE = "gaming_robot_arm.games.mill.cli.generate_selfplay_data"
+TEACHER_MODULE = "gaming_robot_arm.games.mill.cli.generate_teacher_data"
+TRAIN_MODULE = "gaming_robot_arm.games.mill.cli.train"
+BENCHMARK_MODULE = "gaming_robot_arm.games.mill.cli.benchmark"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -628,6 +631,7 @@ def main() -> int:
     python_exe = args.python_exe if args.python_exe is not None else Path(sys.executable)
     if not python_exe.exists():
         raise FileNotFoundError(f"Python-Executable nicht gefunden: {python_exe}")
+    project_root = Path.cwd().resolve()
 
     initial_champion = args.initial_champion
     if not initial_champion.exists():
@@ -644,22 +648,6 @@ def main() -> int:
     args.watchdog_log_root.mkdir(parents=True, exist_ok=True)
     args.eval_log_dir.mkdir(parents=True, exist_ok=True)
 
-    watchdog_script = REPO_ROOT / "scripts" / "mill" / "mill_train_watchdog.py"
-    selfplay_script = REPO_ROOT / "scripts" / "mill" / "mill_generate_selfplay_data.py"
-    teacher_script = REPO_ROOT / "scripts" / "mill" / "mill_generate_teacher_data.py"
-    train_script = REPO_ROOT / "scripts" / "mill" / "mill_train_neural.py"
-    benchmark_script = REPO_ROOT / "scripts" / "mill" / "mill_ai_benchmark.py"
-
-    if not watchdog_script.exists():
-        raise FileNotFoundError(f"Watchdog-Skript nicht gefunden: {watchdog_script}")
-    if not selfplay_script.exists():
-        raise FileNotFoundError(f"Selbstspiel-Skript nicht gefunden: {selfplay_script}")
-    if not teacher_script.exists():
-        raise FileNotFoundError(f"Teacher-Skript nicht gefunden: {teacher_script}")
-    if not train_script.exists():
-        raise FileNotFoundError(f"Training-Skript nicht gefunden: {train_script}")
-    if not benchmark_script.exists():
-        raise FileNotFoundError(f"Benchmark-Skript nicht gefunden: {benchmark_script}")
     for replay_path in args.replay_data:
         if not replay_path.exists():
             raise FileNotFoundError(f"--replay-data nicht gefunden: {replay_path}")
@@ -686,7 +674,8 @@ def main() -> int:
 
         generate_selfplay_cmd = [
             str(python_exe),
-            str(selfplay_script),
+            "-m",
+            SELFPLAY_MODULE,
             "--model",
             str(current_champion),
             "--opponent-model",
@@ -710,7 +699,7 @@ def main() -> int:
             str(selfplay_data_path),
         ]
 
-        selfplay_result = _run_command(generate_selfplay_cmd, cwd=REPO_ROOT, capture=True)
+        selfplay_result = _run_command(generate_selfplay_cmd, cwd=project_root, capture=True)
         if selfplay_result.stdout:
             print(selfplay_result.stdout, end="")
         if selfplay_result.stderr:
@@ -727,7 +716,8 @@ def main() -> int:
         if args.ab_games_per_iter > 0:
             generate_ab_cmd = [
                 str(python_exe),
-                str(teacher_script),
+                "-m",
+                TEACHER_MODULE,
                 "--games",
                 str(args.ab_games_per_iter),
                 "--teacher-depth",
@@ -746,7 +736,7 @@ def main() -> int:
                 "--output",
                 str(ab_data_path),
             ]
-            ab_result = _run_command(generate_ab_cmd, cwd=REPO_ROOT, capture=True)
+            ab_result = _run_command(generate_ab_cmd, cwd=project_root, capture=True)
             if ab_result.stdout:
                 print(ab_result.stdout, end="")
             if ab_result.stderr:
@@ -778,7 +768,8 @@ def main() -> int:
 
         train_cmd = [
             str(python_exe),
-            str(train_script),
+            "-m",
+            TRAIN_MODULE,
             "--data",
             str(data_path),
             "--init-model",
@@ -811,7 +802,8 @@ def main() -> int:
 
         watchdog_cmd = [
             str(python_exe),
-            str(watchdog_script),
+            "-m",
+            WATCHDOG_MODULE,
             "--interval-seconds",
             str(args.watchdog_interval_seconds),
             "--max-restarts",
@@ -828,7 +820,7 @@ def main() -> int:
             *train_cmd,
         ]
 
-        watchdog_result = _run_command(watchdog_cmd, cwd=REPO_ROOT, capture=False)
+        watchdog_result = _run_command(watchdog_cmd, cwd=project_root, capture=False)
         if watchdog_result.returncode != 0:
             print(f"Iteration {iter_tag} ist waehrend Training fehlgeschlagen (exit={watchdog_result.returncode}).")
             return watchdog_result.returncode
@@ -849,7 +841,8 @@ def main() -> int:
 
         benchmark_cmd = [
             str(python_exe),
-            str(benchmark_script),
+            "-m",
+            BENCHMARK_MODULE,
             "--ai-a",
             "neural",
             "--ai-a-arg",
@@ -873,7 +866,7 @@ def main() -> int:
             str(args.no_capture_draw_plies),
         ]
 
-        benchmark_result = _run_command(benchmark_cmd, cwd=REPO_ROOT, capture=True)
+        benchmark_result = _run_command(benchmark_cmd, cwd=project_root, capture=True)
         if benchmark_result.stdout:
             print(benchmark_result.stdout, end="")
         if benchmark_result.stderr:
@@ -916,7 +909,8 @@ def main() -> int:
                 ab_eval_log_path = args.eval_log_dir / f"{iter_tag}_{ab_label}.log"
                 ab_cmd = [
                     str(python_exe),
-                    str(benchmark_script),
+                    "-m",
+                    BENCHMARK_MODULE,
                     "--ai-a",
                     "neural",
                     "--ai-a-arg",
@@ -940,7 +934,7 @@ def main() -> int:
                     str(args.no_capture_draw_plies),
                 ]
 
-                ab_result = _run_command(ab_cmd, cwd=REPO_ROOT, capture=True)
+                ab_result = _run_command(ab_cmd, cwd=project_root, capture=True)
                 if ab_result.stdout:
                     print(ab_result.stdout, end="")
                 if ab_result.stderr:

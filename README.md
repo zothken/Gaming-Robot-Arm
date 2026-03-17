@@ -14,7 +14,7 @@ Kamera
   -> gaming_robot_arm.control.UArmController (uArm Swift API)
 
 Kalibrierung:
-  gaming_robot_arm.games.mill.mill_board_detector -> gaming_robot_arm.calibration.calibration -> gaming_robot_arm/calibration/*.json
+  gaming_robot_arm.vision.mill_board_detector -> gaming_robot_arm.calibration.calibration -> gaming_robot_arm/calibration/*.json
   gaming_robot_arm.utils.homography (img_to_robot) nutzt die gespeicherte Homography
 ```
 
@@ -56,6 +56,7 @@ Kalibrierung:
 | Modul/Datei | Funktion |
 | --- | --- |
 | `gaming_robot_arm/vision/figure_detector.py` | Erkennung runder Figuren, Farbklassifikation, Zuordnung zu Brettlabels. |
+| `gaming_robot_arm/vision/mill_board_detector.py` | Brettlinien-Detektion und Schnittpunkte (A1-C8) fuer die Kalibrierung. |
 | `gaming_robot_arm/vision/recording.py` | Kamera-Handling, Frame-Lesen, MP4-Aufzeichnung, Live-Preview. |
 | `gaming_robot_arm/vision/visualization.py` | Zeichnet Detections, IDs und Debug-Frames. |
 
@@ -71,7 +72,6 @@ Kalibrierung:
 | --- | --- |
 | `gaming_robot_arm/games/common/interfaces.py` | Gemeinsame Schnittstellen fuer Spiel-Logik. |
 | `gaming_robot_arm/games/mill/board.py` | Brett-Labels, Nachbarschaften und Mill-Linien. |
-| `gaming_robot_arm/games/mill/mill_board_detector.py` | Brettlinien-Detektion und Schnittpunkte (A1-C8) fuer die Kalibrierung. |
 | `gaming_robot_arm/games/mill/rules.py` | Regeln fuer Nine Men's Morris (Mill). |
 | `gaming_robot_arm/games/mill/settings.py` | Umschaltbare Regel-Einstellungen (z.B. Flying, Remis-Regeln) fuer spaeteres GUI-Menue. |
 | `gaming_robot_arm/games/mill/session.py` | Sitzungscontainer fuer Zustand + Zughistorie inkl. KI-Anbindung. |
@@ -183,8 +183,13 @@ Kalibrierung:
 9. **Projekt konfigurieren**
    - `gaming_robot_arm/config.py` anpassen:
      - `CAMERA_INDEX`, `FRAME_WIDTH`/`FRAME_HEIGHT` (optional; `None` = native Kameraaufloesung), `FRAME_RATE` (optional; `None` = native Kamera-FPS)
-     - `SAFE_Z`, `PICK_Z`, `PLACE_Z`, `REST_POS`
-   - Optional: `BOARD_LINE_PARAMS` fuer die Brett-Detektion feinjustieren (Mill-Board-Detector).
+     - `SAFE_Z`, `REST_POS`
+   - `gaming_robot_arm/calibration/mill_default_calibration.py` anpassen:
+     - `MILL_UARM_POSITIONS` (A1-C8 Brettkoordinaten)
+     - `MILL_WHITE_RESERVE_POSITIONS` und `MILL_BLACK_RESERVE_POSITIONS` (3x3 Vorratskoordinaten fuer Setzzuege)
+     - `MILL_PICK_Z`, `MILL_PLACE_Z` (Greif-/Ablagehoehen auf dem Brett)
+     - `MILL_RESERVE_PICK_Z` (Pickhoehe fuer Reservepositionen)
+   - Optional: `BOARD_LINE_PARAMS` in `gaming_robot_arm/games/mill/mill_board_detector.py` fuer die Brett-Detektion feinjustieren.
 
 10. **Kalibrierung durchfuehren**
 
@@ -220,14 +225,14 @@ session.apply_move(move)
 Vergleichstest (10 Spiele, wechselnde Farben):
 
 ```bash
-python scripts/mill/mill_ai_benchmark.py --games 10 --depth 3
+gra-mill-benchmark --games 10 --depth 3
 ```
 
 Der Vergleichstest ist generisch und kann beliebige Zug-Provider gegeneinander testen:
 
 ```bash
-python scripts/mill/mill_ai_benchmark.py --ai-a heuristic --ai-b alphabeta --ai-b-arg depth=4 --games 10
-python scripts/mill/mill_ai_benchmark.py --list-ai
+gra-mill-benchmark --ai-a heuristic --ai-b alphabeta --ai-b-arg depth=4 --games 10
+gra-mill-benchmark --list-ai
 ```
 
 ### Neuronales Mill-Training (PyTorch)
@@ -235,19 +240,19 @@ python scripts/mill/mill_ai_benchmark.py --list-ai
 Schritt 1: Lehrerdaten per Selbstspiel mit `AlphaBetaMillAI` erzeugen:
 
 ```bash
-python scripts/mill/mill_generate_teacher_data.py --games 500 --teacher-depth 3 --output data/mill_teacher.jsonl
+gra-mill-generate-teacher --games 500 --teacher-depth 3 --output data/mill_teacher.jsonl
 ```
 
 Schritt 2: Policy/Value-Modell (PyTorch, Mini-Batches + Checkpoints) trainieren:
 
 ```bash
-python scripts/mill/mill_train_neural.py --data data/mill_teacher.jsonl --output models/mill_torch_v1.pt --epochs 12 --batch-size 128
+gra-mill-train --data data/mill_teacher.jsonl --output models/mill_torch_v1.pt --epochs 12 --batch-size 128
 ```
 
 Schritt 3: Neuronale KI gegen Basisgegner vergleichen:
 
 ```bash
-python scripts/mill/mill_ai_benchmark.py --ai-a neural --ai-a-arg model_path=models/mill_torch_v1.pt --ai-b alphabeta --ai-b-arg depth=4 --games 20
+gra-mill-benchmark --ai-a neural --ai-a-arg model_path=models/mill_torch_v1.pt --ai-b alphabeta --ai-b-arg depth=4 --games 20
 ```
 
 Hinweis zu Regelkonsistenz: fuer Datengenerierung, Trainingsevaluation und Vergleichstest sollten dieselben Mill-Regelschalter genutzt werden (`--enable-flying`, `--enable-threefold-repetition`, `--enable-no-capture-draw`).
@@ -255,12 +260,12 @@ Hinweis zu Regelkonsistenz: fuer Datengenerierung, Trainingsevaluation und Vergl
 Regelschalter fuer ein spaeteres GUI-Menue:
 
 - Backend-Einstellungen: `gaming_robot_arm/games/mill/settings.py` (`MillRuleSettings`)
-- Projekt-Standardwerte: `gaming_robot_arm/config.py` (`MILL_*` Konstanten)
+- Projekt-Standardwerte: `gaming_robot_arm/games/mill/settings.py` (`MILL_*` Konstanten)
 
 Beispiel (ohne GUI, interne KI):
 
 ```python
-from gaming_robot_arm.config import (
+from gaming_robot_arm.games.mill.core.settings import (
     MILL_ENABLE_FLYING,
     MILL_ENABLE_NO_CAPTURE_DRAW,
     MILL_ENABLE_THREEFOLD_REPETITION,

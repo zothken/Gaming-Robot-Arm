@@ -1,16 +1,16 @@
 """Watchdog fuer Muehle-Datenerzeugung und/oder neuronales Training.
 
 Einzelkommando-Modus (Altmodus; nur Training):
-  python scripts/mill/mill_train_watchdog.py --interval-seconds 900 -- \
-    python scripts/mill/mill_train_neural.py --data data/mill_teacher_500.jsonl ...
+  gra-mill-watchdog --interval-seconds 900 -- \
+    gra-mill-train --data data/mill_teacher_500.jsonl ...
 
 Zwei-Phasen-Modus (Generierung -> Training):
-  python scripts/mill/mill_train_watchdog.py \
+  gra-mill-watchdog \
     --interval-seconds 900 \
     --data-path data/mill_teacher_500.jsonl \
     --checkpoint-dir models/checkpoints/mill_torch_500e \
-    --generate-cmd "python scripts/mill/mill_generate_teacher_data.py --games 500 --teacher-depth 3 --output data/mill_teacher_500.jsonl" \
-    --train-cmd "python scripts/mill/mill_train_neural.py --data data/mill_teacher_500.jsonl --epochs 500 --batch-size 128 --output models/mill_torch_500e.pt --checkpoint-dir models/checkpoints/mill_torch_500e --checkpoint-every 5"
+    --generate-cmd "gra-mill-generate-teacher --games 500 --teacher-depth 3 --output data/mill_teacher_500.jsonl" \
+    --train-cmd "gra-mill-train --data data/mill_teacher_500.jsonl --epochs 500 --batch-size 128 --output models/mill_torch_500e.pt --checkpoint-dir models/checkpoints/mill_torch_500e --checkpoint-every 5"
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import argparse
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 import shutil
 import shlex
 import signal
@@ -27,6 +28,13 @@ import sys
 import threading
 import time
 from typing import Callable
+
+
+_GENERATE_PROGRESS_RE = re.compile(
+    r"Erzeugte Partie (?P<games_done>\d+)/(?P<games_total>\d+) \| "
+    r"samples=(?P<samples>\d+) remis=(?P<draws>\d+) "
+    r"W_siege=(?P<white_wins>\d+) B_siege=(?P<black_wins>\d+)"
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -128,9 +136,40 @@ def _data_file_stats(path: Path | None) -> tuple[Path | None, int | None, float 
     return path, int(stat.st_size), age_seconds
 
 
-def _stream_output(proc: subprocess.Popen[str], out_fp, prefix: str) -> None:
+def _phase_progress(stop_state: dict[str, object], phase_name: str) -> dict[str, int | None] | None:
+    progress_by_phase = stop_state.get("phase_progress")
+    if not isinstance(progress_by_phase, dict):
+        return None
+    phase_progress = progress_by_phase.get(phase_name)
+    if not isinstance(phase_progress, dict):
+        return None
+    return phase_progress
+
+
+def _update_generation_progress(stop_state: dict[str, object], phase_name: str, line: str) -> None:
+    match = _GENERATE_PROGRESS_RE.search(line)
+    if match is None:
+        return
+
+    progress = _phase_progress(stop_state, phase_name)
+    if progress is None:
+        return
+
+    for key, value in match.groupdict().items():
+        progress[key] = int(value)
+
+
+def _stream_output(
+    proc: subprocess.Popen[str],
+    out_fp,
+    prefix: str,
+    *,
+    phase_name: str,
+    stop_state: dict[str, object],
+) -> None:
     assert proc.stdout is not None
     for line in proc.stdout:
+        _update_generation_progress(stop_state, phase_name, line)
         text = f"{prefix}{line}"
         out_fp.write(text)
         out_fp.flush()
@@ -168,11 +207,50 @@ def _monitor_checkpoint(checkpoint_dir: Path | None) -> str:
     return f"latest_pt={latest_pt} latest_pt_age_s={int(age_seconds or 0)}"
 
 
-def _monitor_data_file(data_path: Path | None) -> str:
+def _monitor_data_file(data_path: Path | None, progress: dict[str, int | None] | None = None) -> str:
     path, size_bytes, age_seconds = _data_file_stats(data_path)
     if path is None:
-        return "data_file=keine"
-    return f"data_file={path} size_bytes={size_bytes} data_age_s={int(age_seconds or 0)}"
+        base = "data_file=keine"
+    else:
+        base = f"data_file={path} size_bytes={size_bytes} data_age_s={int(age_seconds or 0)}"
+
+    if progress is None:
+        return base
+
+    games_done = progress.get("games_done")
+    games_total = progress.get("games_total")
+    samples = progress.get("samples")
+    draws = progress.get("draws")
+    white_wins = progress.get("white_wins")
+    black_wins = progress.get("black_wins")
+    if games_done is None:
+        return base
+
+    suffix = f" games_played={games_done}"
+    if games_total is not None:
+        suffix += f"/{games_total}"
+    if samples is not None:
+        suffix += f" samples={samples}"
+    if draws is not None:
+        suffix += f" draws={draws}"
+    if white_wins is not None and black_wins is not None:
+        suffix += f" wins_W={white_wins} wins_B={black_wins}"
+    return base + suffix
+
+
+def _infer_single_phase(command: list[str]) -> str:
+    """Leitet fuer Einzelkommando-Modus heuristisch den Phasentyp ab."""
+
+    joined = " ".join(command).lower()
+    generate_markers = (
+        "generate_teacher_data",
+        "generate_selfplay_data",
+        "gra-mill-generate-teacher",
+        "gra-mill-generate-selfplay",
+    )
+    if any(marker in joined for marker in generate_markers):
+        return "generate"
+    return "train"
 
 
 def _run_phase(
@@ -192,6 +270,16 @@ def _run_phase(
     while not bool(stop_state["stop_requested"]):
         start_ts = time.time()
         run_index = restart_count + 1
+        progress_by_phase = stop_state.setdefault("phase_progress", {})
+        if isinstance(progress_by_phase, dict):
+            progress_by_phase[phase_name] = {
+                "games_done": None,
+                "games_total": None,
+                "samples": None,
+                "draws": None,
+                "white_wins": None,
+                "black_wins": None,
+            }
         resolved_exe = shutil.which(command[0]) if command else None
         header = (
             f"[{_now_iso()}] START phase={phase_name} run={run_index} restart_count={restart_count} "
@@ -211,6 +299,7 @@ def _run_phase(
         stream_thread = threading.Thread(
             target=_stream_output,
             args=(proc, run_fp, ""),
+            kwargs={"phase_name": phase_name, "stop_state": stop_state},
             daemon=True,
         )
         stream_thread.start()
@@ -342,7 +431,7 @@ def main() -> int:
                 restart_delay_seconds=args.restart_delay_seconds,
                 max_restarts=args.generate_max_restarts,
                 workdir=args.workdir,
-                monitor_line=lambda: _monitor_data_file(args.data_path),
+                monitor_line=lambda: _monitor_data_file(args.data_path, _phase_progress(stop_state, "generate")),
                 run_fp=run_fp,
                 status_fp=status_fp,
                 stop_state=stop_state,
@@ -364,14 +453,19 @@ def main() -> int:
             )
             return train_rc
 
+        single_phase = _infer_single_phase(train_cmd)
+        if single_phase == "generate":
+            monitor = lambda: _monitor_data_file(args.data_path, _phase_progress(stop_state, single_phase))
+        else:
+            monitor = lambda: _monitor_checkpoint(args.checkpoint_dir)
         train_rc = _run_phase(
-            phase_name="train",
+            phase_name=single_phase,
             command=train_cmd,
             interval_seconds=args.interval_seconds,
             restart_delay_seconds=args.restart_delay_seconds,
             max_restarts=train_max_restarts,
             workdir=args.workdir,
-            monitor_line=lambda: _monitor_checkpoint(args.checkpoint_dir),
+            monitor_line=monitor,
             run_fp=run_fp,
             status_fp=status_fp,
             stop_state=stop_state,

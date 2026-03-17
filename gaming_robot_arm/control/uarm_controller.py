@@ -1,13 +1,12 @@
 import logging
-import time
 from typing import Any, Optional
 
 from uarm.utils.log import logger as uarm_logger
 from uarm.wrapper import SwiftAPI
 
 try:
+    from gaming_robot_arm.calibration.mill_default_calibration import MILL_PICK_Z
     from gaming_robot_arm.config import (
-        PICK_Z,
         SAFE_Z,
         UARM_CALLBACK_THREADS,
         UARM_PORT,
@@ -17,8 +16,8 @@ except ModuleNotFoundError:
     import sys
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     sys.path.append(repo_root)
+    from gaming_robot_arm.calibration.mill_default_calibration import MILL_PICK_Z
     from gaming_robot_arm.config import (
-        PICK_Z,
         SAFE_Z,
         UARM_CALLBACK_THREADS,
         UARM_PORT,
@@ -53,10 +52,11 @@ class UArmController:
         options = {**self.swift_options, **swift_options}
 
         logger.info("Verbinde mit uArm Swift Pro...")
-        self.swift = SwiftAPI(port=selected_port, **options)
-        self.swift.waiting_ready()
-        logger.info("uArm bereit auf %s", self.swift.port)
-        return self.swift
+        swift = SwiftAPI(port=selected_port, **options)
+        swift.waiting_ready()
+        self.swift = swift
+        logger.info("uArm bereit auf %s", swift.port)
+        return swift
 
     def disconnect(self) -> None:
         if not self.swift:
@@ -71,26 +71,46 @@ class UArmController:
             logger.info("uArm bereits getrennt, ueberspringe disconnect().")
         self.swift = None
 
-    def move_to(self, x: float, y: float, z: float, speed: int = 500):
+    def _require_swift(self) -> SwiftAPI:
+        swift = self.swift
+        if swift is None:
+            raise RuntimeError("uArm ist nicht verbunden.")
+        return swift
+
+    def move_to(self, x: float, y: float, z: float, speed: int = 500) -> None:
         logger.debug(f"Bewege zu ({x:.1f}, {y:.1f}, {z:.1f})")
-        self.swift.set_position(x=x, y=y, z=z, speed=speed, wait=True)
+        swift = self._require_swift()
+        swift.set_position(x=x, y=y, z=z, speed=speed, wait=True)
 
-    def safe_move(self, x: float, y: float):
-        """Bewege sicher: erst hoch, dann horizontal, dann runter."""
-        self.move_to(x, y, SAFE_Z)
-        time.sleep(0.2)
-        self.move_to(x, y, PICK_Z)
+    def safe_move(self, x: float, y: float, z: float = MILL_PICK_Z, speed: int = 500) -> None:
+        """Bewege sicher: vertikal auf SAFE_Z, dann horizontal, dann auf Ziel-Z."""
+        swift = self._require_swift()
+        current_pos = swift.get_position()
 
-    def open_gripper(self):
+        if current_pos and len(current_pos) >= 2:
+            current_x = float(current_pos[0])
+            current_y = float(current_pos[1])
+            self.move_to(current_x, current_y, SAFE_Z, speed=speed)
+        else:
+            logger.debug("Aktuelle Position unbekannt, ueberspringe vertikalen SAFE_Z-Hub.")
+
+        self.move_to(x, y, SAFE_Z, speed=speed)
+        if z != SAFE_Z:
+            self.move_to(x, y, z, speed=speed)
+
+    def open_gripper(self) -> None:
         logger.debug("Oeffne Greifer")
-        self.swift.set_gripper(True)
+        swift = self._require_swift()
+        swift.set_gripper(True)
 
-    def close_gripper(self):
+    def close_gripper(self) -> None:
         logger.debug("Schliesse Greifer")
-        self.swift.set_gripper(False)
+        swift = self._require_swift()
+        swift.set_gripper(False)
 
-    def emergency_stop(self):
+    def emergency_stop(self) -> None:
         """Sofortiger Stopp (z. B. bei Handerkennung)."""
-        if self.swift:
+        swift = self.swift
+        if swift:
             logger.warning("Notstopp ausgeloest!")
-            self.swift.set_speed_factor(0)
+            swift.set_speed_factor(0)

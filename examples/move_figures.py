@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import time
 from contextlib import nullcontext
+from typing import Mapping, TypedDict
 
-from gaming_robot_arm.config import PICK_Z, PLACE_Z, REST_POS, SAFE_Z, UARM_PORT
+from gaming_robot_arm.config import REST_POS, SAFE_Z, UARM_PORT
 from gaming_robot_arm.calibration.calibration import load_board_pixels
-from gaming_robot_arm.calibration.mill_default_calibration import MILL_UARM_POSITIONS
+from gaming_robot_arm.calibration.mill_default_calibration import MILL_PICK_Z, MILL_PLACE_Z, MILL_UARM_POSITIONS
 from gaming_robot_arm.control import UArmController
 from gaming_robot_arm.utils.cli import prompt_board_label, prompt_recording_enabled
 from gaming_robot_arm.utils.homography import fit_homography_from_correspondences, img_to_robot, load_homography
@@ -18,11 +19,42 @@ from gaming_robot_arm.vision.recording import recording_session
 # Temporärer Korrekturwert: uArm fährt beim Anfahren der Figur zu weit in +Y.
 PICKUP_Y_OFFSET_MM = 0.0
 
+
+BoardPixels = dict[str, tuple[float, float]]
+
+
+class BoardAssignment(TypedDict):
+    label: str
+    centroid: tuple[float, float]
+    color: str
+
+
+def _as_float_board_pixels(
+    pixels: dict[str, tuple[int, int]] | dict[str, tuple[float, float]],
+) -> BoardPixels:
+    return {label: (float(u), float(v)) for label, (u, v) in pixels.items()}
+
+
+def _parse_assignment(raw_assignment: Mapping[str, object]) -> BoardAssignment | None:
+    label = raw_assignment.get("label")
+    centroid = raw_assignment.get("centroid")
+    color = raw_assignment.get("color")
+    if not isinstance(label, str) or not isinstance(color, str):
+        return None
+    if not isinstance(centroid, (tuple, list)) or len(centroid) != 2:
+        return None
+    u, v = centroid
+    if not isinstance(u, (int, float)) or not isinstance(v, (int, float)):
+        return None
+    return {"label": label, "centroid": (float(u), float(v)), "color": color}
+
+
 def main() -> None:
-    H, board_pixels = load_homography()
+    H, loaded_board_pixels = load_homography()
+    board_pixels: BoardPixels = _as_float_board_pixels(loaded_board_pixels)
     if not board_pixels:
         try:
-            board_pixels = load_board_pixels()
+            board_pixels = _as_float_board_pixels(load_board_pixels())
         except FileNotFoundError as exc:
             raise SystemExit(
                 "Keine Brett-Pixel gefunden. Bitte `python -m gaming_robot_arm.calibration.calibration` "
@@ -69,12 +101,17 @@ def main() -> None:
             print("Druecke 'q' bei einer Eingabe, um zu beenden.")
 
             while True:
-                assignments = detect_board_assignments(
+                raw_assignments = detect_board_assignments(
                     board_pixels,
                     session=session if record_enabled else None,
                     labels_order=sorted(board_pixels.keys()),
                     debug_assignments=False,
                 )
+                assignments: list[BoardAssignment] = []
+                for raw_assignment in raw_assignments:
+                    parsed = _parse_assignment(raw_assignment)
+                    if parsed is not None:
+                        assignments.append(parsed)
 
                 assignments = sorted(assignments, key=lambda a: a["label"])
                 assignments_by_label = {a["label"]: a for a in assignments}
@@ -122,14 +159,16 @@ def main() -> None:
                 start_assignment = assignments_by_label.get(start_lbl)
                 if not start_assignment or "centroid" not in start_assignment:
                     logger.info("Keine Figur fuer %s erkannt, starte erneute Erkennung.", start_lbl)
-                    retry_assignments = detect_board_assignments(
+                    raw_retry_assignments = detect_board_assignments(
                         board_pixels,
                         session=session if record_enabled else None,
                         labels_order=sorted(board_pixels.keys()),
                         debug_assignments=False,
                     )
-                    if retry_assignments:
-                        assignments_by_label.update({a["label"]: a for a in retry_assignments})
+                    for raw_assignment in raw_retry_assignments:
+                        parsed = _parse_assignment(raw_assignment)
+                        if parsed is not None:
+                            assignments_by_label[parsed["label"]] = parsed
                     start_assignment = assignments_by_label.get(start_lbl)
 
                 if not start_assignment or "centroid" not in start_assignment:
@@ -151,7 +190,7 @@ def main() -> None:
                 try:
                     # Position des Steins anfahren und ansaugen
                     controller.move_to(start_x, start_y_pick, SAFE_Z)
-                    controller.move_to(start_x, start_y_pick, PICK_Z)
+                    controller.move_to(start_x, start_y_pick, MILL_PICK_Z)
                     swift.set_pump(on=True)
                     pump_on = True
                     time.sleep(0.2)
@@ -161,7 +200,7 @@ def main() -> None:
                     controller.move_to(target_x, target_y, SAFE_Z)
 
                     # Stein ablegen
-                    controller.move_to(target_x, target_y, PLACE_Z)
+                    controller.move_to(target_x, target_y, MILL_PLACE_Z)
                     swift.set_pump(on=False)
                     pump_on = False
                     controller.move_to(target_x, target_y, SAFE_Z)

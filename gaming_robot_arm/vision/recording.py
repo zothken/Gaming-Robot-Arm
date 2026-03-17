@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter, sleep
 from typing import Iterator, Optional
 
 import cv2
@@ -18,11 +19,16 @@ from gaming_robot_arm.config import (
 )
 from gaming_robot_arm.utils.logger import logger
 
-FOURCC = cv2.VideoWriter_fourcc(*"MJPG")
+FOURCC = cv2.VideoWriter.fourcc(*"MJPG")
 
 FALLBACK_FRAME_WIDTH = 1920
 FALLBACK_FRAME_HEIGHT = 1080
 FALLBACK_FRAME_RATE = 30.0
+FPS_PROBE_DURATION_S = 2.0
+FPS_PROBE_MIN_FRAMES = 2
+FPS_PROBE_MAX_FRAMES = 240
+FPS_PROBE_MAX_FAILS = 40
+FPS_PROBE_RETRY_SLEEP_S = 0.01
 
 
 def _fallback_dim(*values: Optional[int], default: int) -> int:
@@ -50,12 +56,76 @@ def get_effective_camera_fps(
     *,
     override_fps: Optional[float] = None,
     configured_fps: Optional[float] = None,
+    measured_fps: Optional[float] = None,
 ) -> float:
     """Liefert eine robuste FPS-Schaetzung fuer Fenster/Writer (0er-Werte werden ignoriert)."""
     if configured_fps is None:
         configured_fps = FRAME_RATE
     cam_fps = cam.get(cv2.CAP_PROP_FPS) or 0.0
-    return _fallback_fps(override_fps, cam_fps, configured_fps, default=FALLBACK_FRAME_RATE)
+    return _fallback_fps(override_fps, cam_fps, measured_fps, configured_fps, default=FALLBACK_FRAME_RATE)
+
+
+def _probe_camera_fps(cam: cv2.VideoCapture) -> Optional[float]:
+    """Misst FPS aktiv ueber kurze Zeit, wenn der Treiber 0 FPS meldet."""
+    start = perf_counter()
+    frames = 0
+    failures = 0
+    while frames < FPS_PROBE_MAX_FRAMES:
+        if perf_counter() - start >= FPS_PROBE_DURATION_S:
+            break
+        ret, _frame = cam.read()
+        if ret:
+            frames += 1
+            failures = 0
+            continue
+
+        failures += 1
+        if failures >= FPS_PROBE_MAX_FAILS:
+            break
+        sleep(FPS_PROBE_RETRY_SLEEP_S)
+    elapsed = perf_counter() - start
+    if frames >= FPS_PROBE_MIN_FRAMES and elapsed > 0:
+        return frames / elapsed
+    return None
+
+
+def _resolve_fps_info(
+    cam: cv2.VideoCapture,
+    *,
+    override_fps: Optional[float] = None,
+    configured_fps: Optional[float] = None,
+    probe_if_unknown: bool = False,
+) -> tuple[float, float, Optional[float], str]:
+    """Ermittelt effektive FPS plus Metadaten zur Quelle."""
+    if configured_fps is None:
+        configured_fps = FRAME_RATE
+    cam_fps = float(cam.get(cv2.CAP_PROP_FPS) or 0.0)
+
+    override_valid = override_fps is not None and float(override_fps) > 0
+    measured_fps: Optional[float] = None
+    if probe_if_unknown and cam_fps <= 0 and not override_valid:
+        measured_fps = _probe_camera_fps(cam)
+
+    effective_fps = get_effective_camera_fps(
+        cam,
+        override_fps=override_fps,
+        configured_fps=configured_fps,
+        measured_fps=measured_fps,
+    )
+
+    config_valid = configured_fps is not None and float(configured_fps) > 0
+    if override_valid:
+        source = "override"
+    elif cam_fps > 0:
+        source = "camera"
+    elif measured_fps is not None and measured_fps > 0:
+        source = "measured"
+    elif config_valid:
+        source = "config"
+    else:
+        source = "fallback"
+
+    return effective_fps, cam_fps, measured_fps, source
 
 
 @dataclass
@@ -100,10 +170,10 @@ def open_camera(
     warmup_frames: int = 10,
 ) -> Iterator[cv2.VideoCapture]:
     """Kontextmanager, der einen geoeffneten und vorkonfigurierten Kamerastream bereitstellt."""
-    cam = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    cam = cv2.VideoCapture(camera_index)
     if not cam.isOpened():
         cam.release()
-        cam = cv2.VideoCapture(camera_index)
+        cam = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
     if not cam.isOpened():
         raise RuntimeError(f"Konnte Kamera mit Index {camera_index} nicht oeffnen.")
 
@@ -112,7 +182,7 @@ def open_camera(
 
     def _apply_resolution(target_width: int, target_height: int) -> tuple[int, int]:
         if target_width >= 1280 or target_height >= 720:
-            cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cam.set(cv2.CAP_PROP_FOURCC, FOURCC)
         cam.set(cv2.CAP_PROP_FRAME_WIDTH, int(target_width))
         cam.set(cv2.CAP_PROP_FRAME_HEIGHT, int(target_height))
         actual_w = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
@@ -127,9 +197,8 @@ def open_camera(
         actual_width = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         actual_height = int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
 
-    if FRAME_RATE is not None and float(FRAME_RATE) > 0:
-        cam.set(cv2.CAP_PROP_FPS, float(FRAME_RATE))
-    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    requested_fps = _fallback_fps(FRAME_RATE, default=FALLBACK_FRAME_RATE)
+    cam.set(cv2.CAP_PROP_FPS, float(requested_fps))
 
     # Fallback: wenn die angeforderte Aufloesung offensichtlich nicht uebernommen wurde,
     # probiere 720p als naechstbesten HD-Modus.
@@ -169,6 +238,20 @@ def open_camera(
             if not cam.grab():
                 break
 
+    effective_fps, cam_fps, measured_fps, fps_source = _resolve_fps_info(
+        cam,
+        configured_fps=requested_fps,
+        probe_if_unknown=False,
+    )
+    logger.info(
+        "Kamera-FPS: %.2f (effektiv: %.2f, Quelle: %s, Gemessen: %s, Config: %s)",
+        cam_fps,
+        effective_fps,
+        fps_source,
+        f"{measured_fps:.2f}" if measured_fps is not None else "None",
+        f"{float(FRAME_RATE):.2f}" if FRAME_RATE is not None else "None",
+    )
+
     try:
         yield cam
     finally:
@@ -198,7 +281,11 @@ def _create_video_writer(
             frame_width = _fallback_dim(FRAME_WIDTH, default=FALLBACK_FRAME_WIDTH)
             frame_height = _fallback_dim(FRAME_HEIGHT, default=FALLBACK_FRAME_HEIGHT)
 
-    fps = get_effective_camera_fps(cam, override_fps=fps_override)
+    fps, cam_fps, measured_fps, fps_source = _resolve_fps_info(
+        cam,
+        override_fps=fps_override,
+        probe_if_unknown=False,
+    )
 
     writer = cv2.VideoWriter(
         str(output_path),
@@ -209,6 +296,15 @@ def _create_video_writer(
     if not writer.isOpened():
         raise RuntimeError(f"Konnte Video-Writer unter {output_path} nicht oeffnen.")
 
+    logger.info(
+        "FPS fuer Aufnahme: %.2f (Quelle: %s, Kamera: %.2f, Gemessen: %s, Config: %s, Override: %s)",
+        fps,
+        fps_source,
+        cam_fps,
+        f"{measured_fps:.2f}" if measured_fps is not None else "None",
+        f"{float(FRAME_RATE):.2f}" if FRAME_RATE is not None else "None",
+        f"{float(fps_override):.2f}" if fps_override is not None else "None",
+    )
     logger.info("Aufnahme gestartet: %s", output_path)
     return writer, output_path, prefetched_frame
 
@@ -256,11 +352,21 @@ def _run_live_preview(camera_index: int = CAMERA_INDEX, stop_key: str = "q") -> 
     with open_camera(camera_index) as cam:
         logger.info("Live-Vorschau gestartet (Stopp mit Taste '%s').", stop_key)
         window_sized = False
+        preview_frames = 0
+        preview_start = perf_counter()
+        preview_fps_logged = False
         while True:
             ret, frame = cam.read()
             if not ret:
                 logger.warning("Konnte kein Frame lesen; beende Vorschau.")
                 break
+
+            preview_frames += 1
+            if not preview_fps_logged:
+                elapsed = perf_counter() - preview_start
+                if elapsed >= 1.5 and preview_frames >= 5:
+                    logger.info("Live-Vorschau FPS (gemessen): %.2f", preview_frames / elapsed)
+                    preview_fps_logged = True
 
             if not window_sized:
                 h, w = frame.shape[:2]

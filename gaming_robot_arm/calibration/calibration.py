@@ -10,8 +10,8 @@ import numpy as np
 
 from gaming_robot_arm.config import CALIBRATION_DIR, CAMERA_INDEX
 from gaming_robot_arm.utils.logger import logger as base_logger
-from gaming_robot_arm.games.mill.board import BOARD_LABELS
-from gaming_robot_arm.games.mill.mill_board_detector import detect_board_positions
+from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
+from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
 from gaming_robot_arm.vision.recording import open_camera
 logger = base_logger.getChild("calibration")
 CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)

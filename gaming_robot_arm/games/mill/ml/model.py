@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-from gaming_robot_arm.games.mill.neural_features import MOVE_FEATURE_DIM, STATE_FEATURE_DIM
+from .features import MOVE_FEATURE_DIM, STATE_FEATURE_DIM
 
 _CHECKPOINT_VERSION = 1
 

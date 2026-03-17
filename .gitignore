@@ -30,6 +30,8 @@ logs/
 data/
 models/checkpoints/
 models/selfplay/
+models/evolution_ab
+models/evolution_ab_continued/generations
 
 # Videoaufnahmen
 *.mp4

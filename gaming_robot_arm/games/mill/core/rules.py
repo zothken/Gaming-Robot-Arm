@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 from gaming_robot_arm.games.common.interfaces import Move, Player, Rules
-from gaming_robot_arm.games.mill.board import ADJACENT, BOARD_LABELS, MILLS_BY_POSITION
-from gaming_robot_arm.games.mill.constants import PIECES_PER_PLAYER, PLAYERS
-from gaming_robot_arm.games.mill.settings import MillRuleSettings
-from gaming_robot_arm.games.mill.state import MillState
+from .board import ADJACENT, BOARD_LABELS, MILLS_BY_POSITION
+from .constants import PIECES_PER_PLAYER, PLAYERS
+from .settings import MillRuleSettings
+from .state import MillState
 
 
 def other_player(player: Player) -> Player:

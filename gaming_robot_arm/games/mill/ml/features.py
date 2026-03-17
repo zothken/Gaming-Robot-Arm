@@ -7,10 +7,10 @@ from typing import Dict
 import numpy as np
 
 from gaming_robot_arm.games.common.interfaces import Move, Player
-from gaming_robot_arm.games.mill.board import BOARD_LABELS
-from gaming_robot_arm.games.mill.constants import PIECES_PER_PLAYER
-from gaming_robot_arm.games.mill.rules import MillRules, count_pieces, other_player, phase_for_player
-from gaming_robot_arm.games.mill.state import MillState
+from ..core.board import BOARD_LABELS
+from ..core.constants import PIECES_PER_PLAYER
+from ..core.rules import MillRules, count_pieces, other_player, phase_for_player
+from ..core.state import MillState
 
 
 _LABEL_TO_INDEX: Dict[str, int] = {label: idx for idx, label in enumerate(BOARD_LABELS)}

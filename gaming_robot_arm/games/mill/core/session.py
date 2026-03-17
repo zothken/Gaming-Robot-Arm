@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from typing import Protocol, Sequence
 
 from gaming_robot_arm.games.common.interfaces import Move
-from gaming_robot_arm.games.mill.rules import MillRules
-from gaming_robot_arm.games.mill.state import MillState
+from .rules import MillRules
+from .state import MillState
 
 
 class MillMoveProvider(Protocol):

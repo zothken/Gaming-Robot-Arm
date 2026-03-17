@@ -11,14 +11,14 @@ import numpy as np
 import torch
 
 from gaming_robot_arm.games.common.interfaces import Move
-from gaming_robot_arm.games.mill.neural_features import (
+from ..ml.features import (
     MOVE_FEATURE_DIM,
     encode_legal_move_features,
     encode_state_features,
 )
-from gaming_robot_arm.games.mill.neural_model import MillPolicyValueNet, load_checkpoint, select_torch_device
-from gaming_robot_arm.games.mill.rules import MillRules
-from gaming_robot_arm.games.mill.state import MillState
+from ..ml.model import MillPolicyValueNet, load_checkpoint, select_torch_device
+from ..core.rules import MillRules
+from ..core.state import MillState
 
 
 def _move_sort_key(move: Move) -> tuple[str, str, str]:

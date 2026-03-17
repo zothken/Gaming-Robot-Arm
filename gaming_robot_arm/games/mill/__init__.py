@@ -1,11 +1,11 @@
 """Spiellogik fuer Muehle (Nine Men's Morris)."""
 
-from .builtin_ai import AlphaBetaMillAI, HeuristicMillAI
-from .constants import PIECES_PER_PLAYER, PLAYERS
-from .rules import MillRules
-from .session import MillGameSession
-from .settings import MillRuleSettings
-from .state import MillState
+from .ai.builtin import AlphaBetaMillAI, HeuristicMillAI
+from .core.constants import PIECES_PER_PLAYER, PLAYERS
+from .core.rules import MillRules
+from .core.session import MillGameSession
+from .core.settings import MillRuleSettings
+from .core.state import MillState
 
 
 def __getattr__(name: str):
@@ -14,7 +14,7 @@ def __getattr__(name: str):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
     try:
-        from .neural_ai import NeuralMillAI as _NeuralMillAI
+        from .ai.neural import NeuralMillAI as _NeuralMillAI
     except ModuleNotFoundError as exc:  # pragma: no cover - optionaler Abhaengigkeitspfad (numpy/torch fehlt)
         if exc.name not in {"numpy", "torch"}:
             raise

@@ -23,4 +23,17 @@ class MillRuleSettings:
             raise ValueError("no_capture_draw_plies muss groesser als null sein.")
 
 
-__all__ = ["MillRuleSettings"]
+DEFAULT_MILL_RULE_SETTINGS = MillRuleSettings()
+MILL_ENABLE_FLYING = DEFAULT_MILL_RULE_SETTINGS.enable_flying
+MILL_ENABLE_THREEFOLD_REPETITION = DEFAULT_MILL_RULE_SETTINGS.enable_threefold_repetition
+MILL_ENABLE_NO_CAPTURE_DRAW = DEFAULT_MILL_RULE_SETTINGS.enable_no_capture_draw
+MILL_NO_CAPTURE_DRAW_PLIES = DEFAULT_MILL_RULE_SETTINGS.no_capture_draw_plies
+
+__all__ = [
+    "DEFAULT_MILL_RULE_SETTINGS",
+    "MILL_ENABLE_FLYING",
+    "MILL_ENABLE_NO_CAPTURE_DRAW",
+    "MILL_ENABLE_THREEFOLD_REPETITION",
+    "MILL_NO_CAPTURE_DRAW_PLIES",
+    "MillRuleSettings",
+]

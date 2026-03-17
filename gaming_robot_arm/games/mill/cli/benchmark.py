@@ -6,15 +6,8 @@ import argparse
 from dataclasses import dataclass
 import importlib
 import inspect
-from pathlib import Path
-import sys
 import time
 from typing import Any, Sequence
-
-# Erlaubt das direkte Ausfuehren dieses Skripts aus der Repository-Wurzel.
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from gaming_robot_arm.games.mill import (
     AlphaBetaMillAI,

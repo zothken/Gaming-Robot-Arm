@@ -5,15 +5,38 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Literal, overload
-import cv2
 import numpy as np
 
-from gaming_robot_arm.config import BOARD_LINE_PARAMS
-from gaming_robot_arm.games.mill.board import BOARD_LABELS, RINGS
+from gaming_robot_arm.games.mill.core.board import BOARD_LABELS, RINGS
 
+try:
+    import cv2
+except ModuleNotFoundError as exc:  # pragma: no cover - optionaler Laufzeitpfad
+    _cv2_import_error = exc
+
+    class _Cv2Proxy:
+        def __getattr__(self, name: str):
+            raise ModuleNotFoundError(
+                "Mill-Board-Detektion benoetigt OpenCV (`opencv-python`)."
+            ) from _cv2_import_error
+
+    cv2 = _Cv2Proxy()  # type: ignore[assignment]
+
+# Linien-Erkennung (Brett-Detektor)
+BOARD_LINE_PARAMS = {
+    "hough_thresh": 120,
+    "min_len_pct": 2,  # Prozent von max(H, W)
+    "max_gap": 2,
+    "angle_tol": 5,
+    "bw_block": 19,
+    "bw_C": 10,
+    "bw_open": 2,
+    "edge_close": 8,
+    "blur_ksize": 21,
+}
 # Feste Standardparameter (nur diese werden via Slider angepasst)
-DEFAULT_PARAMS = BOARD_LINE_PARAMS
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.py"
+DEFAULT_PARAMS = BOARD_LINE_PARAMS.copy()
+DETECTOR_PATH = Path(__file__).resolve()
 ENABLE_ROTATION_ESTIMATION = False  # TODO: wieder aktivieren, sobald stabil
 BOARD_PARAM_ORDER = [
     ("hough_thresh", None),
@@ -219,9 +242,9 @@ def format_board_params(params):
     return "\n".join(lines) + "\n"
 
 
-def write_board_params_to_config(params, path=CONFIG_PATH):
+def write_board_params_to_detector(params, path=DETECTOR_PATH):
     if not path.exists():
-        print(f"WARN: config.py nicht gefunden: {path}")
+        print(f"WARN: Detector-Datei nicht gefunden: {path}")
         return False
     text = path.read_text(encoding="utf-8")
     pattern = r"BOARD_LINE_PARAMS\s*=\s*\{.*?\}\n?"
@@ -321,6 +344,7 @@ def intersect(hline, vline):
 def detect_board_positions(
     frame_bgr,
     debug: bool = True,
+    *,
     return_bw: Literal[False] = False,
     params=None,
 ) -> tuple[list[tuple[int, int]], np.ndarray]: ...
@@ -330,7 +354,8 @@ def detect_board_positions(
 def detect_board_positions(
     frame_bgr,
     debug: bool = True,
-    return_bw: Literal[True] = ...,
+    *,
+    return_bw: Literal[True],
     params=None,
 ) -> tuple[list[tuple[int, int]], np.ndarray, np.ndarray]: ...
 
@@ -571,9 +596,9 @@ if __name__ == "__main__":
 
                 save_params = normalize_board_params(params)
                 if cv2.getTrackbarPos("save_config", ui) == 1:
-                    if write_board_params_to_config(save_params):
+                    if write_board_params_to_detector(save_params):
                         DEFAULT_PARAMS.update(save_params)
-                        print("Board-Parameter in config.py gespeichert.")
+                        print("Board-Parameter in mill_board_detector.py gespeichert.")
                     cv2.setTrackbarPos("save_config", ui, 0)
 
                 pts, vis, bw = detect_board_positions(frame, debug=False, return_bw=True, params=params)

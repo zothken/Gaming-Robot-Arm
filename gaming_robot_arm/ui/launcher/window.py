@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import shlex
 import sys
-from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, Qt
+from PySide6.QtCore import QProcess, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QFont, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -27,7 +24,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QRadioButton,
     QScrollArea,
     QSplitter,
     QStackedWidget,
@@ -36,66 +32,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gaming_robot_arm.config import (
-    CAMERA_INDEX,
-    MILL_ENABLE_FLYING,
-    MILL_ENABLE_NO_CAPTURE_DRAW,
-    MILL_ENABLE_THREEFOLD_REPETITION,
-    MILL_NO_CAPTURE_DRAW_PLIES,
-    UARM_PORT,
-)
+from .command_builder import build_command
+from .preview import load_board_overlay_detector, load_board_pixels_loader, load_figure_overlay_detector
+from .process_runner import start_qprocess
+from .settings import LauncherSettings, load_launcher_settings, save_launcher_settings
 
 try:
     import cv2
 except ModuleNotFoundError:  # pragma: no cover - optionaler Laufzeitpfad
     cv2 = None
-
-
-@dataclass(slots=True)
-class LauncherSettings:
-    mode: str = "vision-loop"
-    camera_index: int = CAMERA_INDEX
-
-    mill_mode: str = "human-vs-ai"
-    mill_human_color: str = "W"
-    mill_human_input: str = "manual"
-    mill_max_plies: int = 400
-
-    mill_flying: bool = MILL_ENABLE_FLYING
-    mill_threefold_repetition: bool = MILL_ENABLE_THREEFOLD_REPETITION
-    mill_no_capture_draw: bool = MILL_ENABLE_NO_CAPTURE_DRAW
-    mill_no_capture_draw_plies: int = MILL_NO_CAPTURE_DRAW_PLIES
-
-    mill_ai: str = "alphabeta"
-    mill_ai_depth: int = 3
-    mill_ai_model: str = "models/champion/mill_champion.pt"
-    mill_ai_temperature: float = 0.0
-    mill_ai_device: str = "auto"
-    mill_random_tiebreak: bool = True
-    mill_seed: int = 42
-
-    mill_vision_attempts: int = 6
-    mill_debug_vision: bool = False
-
-    mill_uarm_port: str = "" if UARM_PORT is None else str(UARM_PORT)
-    mill_uarm_move_both_players: bool = False
-    mill_robot_speed: int = 500
-    mill_robot_board_map: str = "default"
-    mill_white_reserve: str = ""
-    mill_black_reserve: str = ""
-    mill_capture_bin: str = ""
-
-    @classmethod
-    def from_payload(cls, payload: object) -> "LauncherSettings":
-        base = asdict(cls())
-        if isinstance(payload, dict):
-            for key, value in payload.items():
-                if key in base:
-                    base[key] = value
-        try:
-            return cls(**base)
-        except TypeError:
-            return cls()
 
 
 class LauncherWindow(QMainWindow):
@@ -107,18 +52,19 @@ class LauncherWindow(QMainWindow):
 
         self._suppress_form_updates = False
         self._widgets: dict[str, QWidget] = {}
-        self._mode_buttons: dict[str, QRadioButton] = {}
+        self._segment_buttons: dict[str, dict[str, QPushButton]] = {}
+        self._player_role_buttons: dict[str, dict[str, QPushButton]] = {}
+        self._launch_mode = "play-mill"
         self._process: QProcess | None = None
 
         self._status_label: QLabel | None = None
-        self._summary_label: QLabel | None = None
-        self._hint_label: QLabel | None = None
-        self._settings_file_label: QLabel | None = None
         self._command_preview: QPlainTextEdit | None = None
         self._log_output: QPlainTextEdit | None = None
         self._stdin_input: QLineEdit | None = None
         self._start_button: QPushButton | None = None
         self._stop_button: QPushButton | None = None
+        self._quick_start_button: QPushButton | None = None
+        self._runtime_back_button: QPushButton | None = None
         self._send_button: QPushButton | None = None
         self._left_pages: QStackedWidget | None = None
         self._settings_category_list: QListWidget | None = None
@@ -126,17 +72,27 @@ class LauncherWindow(QMainWindow):
         self._body_splitter: QSplitter | None = None
         self._left_panel: QFrame | None = None
         self._right_panel: QFrame | None = None
+        self._status_row_frame: QFrame | None = None
+        self._camera_box: QGroupBox | None = None
+        self._command_box: QGroupBox | None = None
+        self._input_box: QGroupBox | None = None
+        self._log_box: QGroupBox | None = None
         self._camera_preview_label: QLabel | None = None
         self._camera_preview_overlay_combo: QComboBox | None = None
         self._camera_preview_timer: QTimer | None = None
         self._camera_capture = None
         self._camera_preview_index: int | None = None
+        self._camera_preview_active = False
+        self._runtime_output_only_active = False
         self._board_overlay_detector = None
         self._figure_overlay_detector = None
         self._board_pixels_loader = None
         self._camera_figure_board_coords_cache: dict[tuple[int, int], dict[str, tuple[int, int]] | None] = {}
         self._camera_figure_board_coords_warned: set[tuple[int, int]] = set()
         self._camera_overlay_error_key: str | None = None
+        self._stop_requested = False
+        self._stop_force_killed = False
+        self._stop_request_id = 0
 
         self._setup_process()
         self._build_ui()
@@ -158,7 +114,7 @@ class LauncherWindow(QMainWindow):
         self._process.stateChanged.connect(self._on_process_state_changed)
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("Gaming Robot Arm Leitstand")
+        self.setWindowTitle("Gaming Robot Arm")
         self.resize(1420, 900)
         self.setMinimumSize(1180, 760)
 
@@ -176,7 +132,7 @@ class LauncherWindow(QMainWindow):
         header_layout.setContentsMargins(18, 14, 18, 14)
         header_layout.setSpacing(3)
 
-        title = QLabel("Gaming Robot Arm Leitstand")
+        title = QLabel("Gaming Robot Arm")
         title.setObjectName("HeaderTitle")
         subtitle = QLabel(
             "Startmenü und Einstellungsoberfläche für Vision-Loop und spielbare Mühle auf Basis des bestehenden Backends."
@@ -313,7 +269,7 @@ class LauncherWindow(QMainWindow):
         category_list.setSpacing(6)
         category_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         category_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        category_list.addItems(["Allgemein", "Mühle", "KI", "Robotik + Vision"])
+        category_list.addItems(["Kamera", "Mühle", "KI", "uArm"])
         category_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         row_heights = [category_list.sizeHintForRow(i) for i in range(category_list.count())]
         # Qt liefert hier vor dem ersten Rendern teils zu kleine Row-Hints und ignoriert
@@ -345,10 +301,10 @@ class LauncherWindow(QMainWindow):
 
         pages = QStackedWidget()
         pages.setObjectName("SettingsPages")
-        pages.addWidget(self._build_scrollable_page(self._build_general_tab))
+        pages.addWidget(self._build_scrollable_page(self._build_camera_tab))
         pages.addWidget(self._build_scrollable_page(self._build_mill_tab))
         pages.addWidget(self._build_scrollable_page(self._build_ai_tab))
-        pages.addWidget(self._build_scrollable_page(self._build_bridge_tab))
+        pages.addWidget(self._build_scrollable_page(self._build_uarm_tab))
         self._settings_pages = pages
 
         category_list.currentRowChanged.connect(pages.setCurrentIndex)
@@ -392,17 +348,67 @@ class LauncherWindow(QMainWindow):
         shortcuts_layout = QVBoxLayout(shortcuts)
         shortcuts_layout.setContentsMargins(12, 14, 12, 12)
         shortcuts_layout.setSpacing(8)
+        start_vision_btn = QPushButton("Vision-Laufzeit starten")
+        start_vision_btn.setObjectName("PrimaryButton")
+        start_vision_btn.clicked.connect(self._start_vision_from_dev)
         go_launch_btn = QPushButton("Zu Spiel Starten")
         go_launch_btn.setObjectName("MenuSecondaryButton")
         go_launch_btn.clicked.connect(self._show_launch_screen)
         go_settings_btn = QPushButton("Zu Einstellungen")
         go_settings_btn.setObjectName("MenuSecondaryButton")
         go_settings_btn.clicked.connect(self._show_settings_screen)
+        shortcuts_layout.addWidget(start_vision_btn)
         shortcuts_layout.addWidget(go_launch_btn)
         shortcuts_layout.addWidget(go_settings_btn)
         layout.addWidget(shortcuts)
 
     def _build_launch_content(self, layout: QVBoxLayout) -> None:
+        self._register_hidden_combo("mill_mode", ["human-vs-human", "human-vs-ai", "ai-vs-ai"], default="human-vs-ai")
+        self._register_hidden_combo("mill_human_input", ["manual", "vision"], default="manual")
+        self._register_hidden_combo(
+            "mill_uarm_controlled_players",
+            ["white", "black", "both", "none", "legacy"],
+            default="legacy",
+        )
+        self._register_hidden_combo("mill_human_color", ["W", "B"], default="W")
+        self._register_hidden_check("mill_uarm_enable_ai_moves", checked=False)
+        self._register_hidden_check("mill_uarm_move_both_players", checked=False)
+
+        self._add_player_role_group(layout)
+        self._add_segmented_group(
+            layout,
+            title="uArm-Support",
+            key="mill_uarm_controlled_players",
+            options=[
+                ("uArm bewegt weiß", "white"),
+                ("uArm bewegt schwarz", "black"),
+                ("uArm bewegt beide", "both"),
+            ],
+        )
+        self._add_segmented_group(
+            layout,
+            title="Eingabe der Spielzüge",
+            key="mill_human_input",
+            options=[
+                ("Kamera", "vision"),
+                ("Tastatur", "manual"),
+            ],
+            disabled_labels=["Sprache"],
+            note_text="Sprachsteuerung ist als Platzhalter sichtbar und wird in einem späteren Schritt ergänzt.",
+        )
+
+        start_row = QHBoxLayout()
+        start_row.setSpacing(0)
+        start_row.addStretch(1)
+        self._start_button = QPushButton("Jetzt starten")
+        self._start_button.setObjectName("PrimaryButton")
+        self._start_button.setMinimumWidth(240)
+        self._start_button.clicked.connect(self._start_play_mill_from_launch)
+        start_row.addWidget(self._start_button)
+        start_row.addStretch(1)
+        layout.addLayout(start_row)
+
+        layout.addStretch(1)
         nav_box = self._group_box("Navigation")
         nav_layout = QHBoxLayout(nav_box)
         nav_layout.setContentsMargins(12, 12, 12, 10)
@@ -414,203 +420,399 @@ class LauncherWindow(QMainWindow):
         nav_layout.addStretch(1)
         layout.addWidget(nav_box)
 
-        mode_box = self._group_box("Modusauswahl")
-        mode_layout = QVBoxLayout(mode_box)
-        mode_layout.setContentsMargins(12, 14, 12, 12)
-        mode_layout.setSpacing(10)
+    def _add_player_role_group(self, layout: QVBoxLayout) -> None:
+        box = self._group_box("Spielmodus")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(12, 14, 12, 12)
+        box_layout.setSpacing(8)
 
-        mode_group = QButtonGroup(self)
-        mode_group.setExclusive(True)
+        self._player_role_buttons = {}
+        for player, title in (("W", "Spieler weiß:"), ("B", "Spieler schwarz:")):
+            row = QHBoxLayout()
+            row.setSpacing(8)
 
-        vision_card, vision_radio = self._mode_card(
-            "vision-loop",
-            "Vision-Laufzeit",
-            "Startet den klassischen Vision-/Runtime-Loop (OpenCV + Robotersteuerung).",
+            label = QLabel(title)
+            label.setObjectName("MutedText")
+            label.setMinimumWidth(110)
+            row.addWidget(label)
+
+            buttons: dict[str, QPushButton] = {}
+            for button_text, role in (("Mensch", "human"), ("uArm", "uarm")):
+                button = QPushButton(button_text)
+                button.setObjectName("SegmentOption")
+                button.setCheckable(True)
+                button.clicked.connect(
+                    lambda _checked=False, player_value=player, role_value=role: self._set_player_role(player_value, role_value)
+                )
+                row.addWidget(button)
+                buttons[role] = button
+            row.addStretch(1)
+            box_layout.addLayout(row)
+            self._player_role_buttons[player] = buttons
+
+        layout.addWidget(box)
+        self._sync_player_role_buttons()
+
+    def _register_hidden_combo(self, key: str, values: list[str], *, default: str) -> QComboBox:
+        existing = self._widgets.get(key)
+        if isinstance(existing, QComboBox):
+            return existing
+        widget = QComboBox(self)
+        widget.setEditable(False)
+        widget.addItems(values)
+        widget.setVisible(False)
+        idx = widget.findText(default)
+        if idx >= 0:
+            widget.setCurrentIndex(idx)
+        widget.currentTextChanged.connect(self._on_form_change)
+        self._widgets[key] = widget
+        return widget
+
+    def _register_hidden_check(self, key: str, *, checked: bool) -> QCheckBox:
+        existing = self._widgets.get(key)
+        if isinstance(existing, QCheckBox):
+            return existing
+        widget = QCheckBox(self)
+        widget.setVisible(False)
+        widget.setChecked(checked)
+        widget.toggled.connect(self._on_form_change)
+        self._widgets[key] = widget
+        return widget
+
+    def _add_segmented_group(
+        self,
+        layout: QVBoxLayout,
+        *,
+        title: str,
+        key: str,
+        options: list[tuple[str, str]],
+        disabled_labels: list[str] | None = None,
+        note_text: str | None = None,
+    ) -> None:
+        box = self._group_box(title)
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(12, 14, 12, 12)
+        box_layout.setSpacing(8)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        buttons: dict[str, QPushButton] = {}
+        for label, value in options:
+            button = QPushButton(label)
+            button.setObjectName("SegmentOption")
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, k=key, v=value: self._set_segment_value(k, v))
+            row.addWidget(button)
+            buttons[value] = button
+
+        for disabled_label in disabled_labels or []:
+            button = QPushButton(disabled_label)
+            button.setObjectName("SegmentOption")
+            button.setEnabled(False)
+            button.setToolTip("Platzhalter: Funktion wird später ergänzt.")
+            row.addWidget(button)
+
+        box_layout.addLayout(row)
+        if note_text:
+            note = QLabel(note_text)
+            note.setWordWrap(True)
+            note.setObjectName("MutedText")
+            box_layout.addWidget(note)
+        layout.addWidget(box)
+
+        self._segment_buttons[key] = buttons
+        combo = self._widgets.get(key)
+        if isinstance(combo, QComboBox):
+            combo.currentTextChanged.connect(lambda _text, segment_key=key: self._sync_segment_buttons(segment_key))
+        self._sync_segment_buttons(key)
+
+    def _set_segment_value(self, key: str, value: str) -> None:
+        widget = self._widgets.get(key)
+        if not isinstance(widget, QComboBox):
+            return
+        idx = widget.findText(value)
+        if idx < 0 or widget.currentIndex() == idx:
+            return
+        widget.setCurrentIndex(idx)
+
+    def _sync_segment_buttons(self, key: str) -> None:
+        widget = self._widgets.get(key)
+        buttons = self._segment_buttons.get(key)
+        if not isinstance(widget, QComboBox) or buttons is None:
+            return
+        selected = widget.currentText().strip()
+        for value, button in buttons.items():
+            is_active = value == selected
+            if button.isChecked() != is_active:
+                button.setChecked(is_active)
+
+    def _current_player_roles(self) -> dict[str, str]:
+        mode_widget = self._widgets.get("mill_mode")
+        human_color_widget = self._widgets.get("mill_human_color")
+
+        mode_value = mode_widget.currentText().strip() if isinstance(mode_widget, QComboBox) else "human-vs-ai"
+        human_color = human_color_widget.currentText().strip() if isinstance(human_color_widget, QComboBox) else "W"
+        if human_color not in {"W", "B"}:
+            human_color = "W"
+
+        if mode_value == "human-vs-human":
+            return {"W": "human", "B": "human"}
+        if mode_value == "ai-vs-ai":
+            return {"W": "uarm", "B": "uarm"}
+        if mode_value == "human-vs-ai":
+            if human_color == "W":
+                return {"W": "human", "B": "uarm"}
+            return {"W": "uarm", "B": "human"}
+        return {"W": "human", "B": "human"}
+
+    def _set_player_role(self, player: str, role: str) -> None:
+        if player not in {"W", "B"} or role not in {"human", "uarm"}:
+            return
+        roles = self._current_player_roles()
+        if roles.get(player) == role:
+            return
+        roles[player] = role
+
+        white_role = roles.get("W", "human")
+        black_role = roles.get("B", "human")
+        if white_role == "human" and black_role == "human":
+            target_mode = "human-vs-human"
+            target_human_color = "W"
+        elif white_role == "uarm" and black_role == "uarm":
+            target_mode = "ai-vs-ai"
+            target_human_color = "W"
+        elif white_role == "human" and black_role == "uarm":
+            target_mode = "human-vs-ai"
+            target_human_color = "W"
+        else:
+            target_mode = "human-vs-ai"
+            target_human_color = "B"
+
+        self._set_combo_text_safely("mill_mode", target_mode)
+        self._set_combo_text_safely("mill_human_color", target_human_color)
+        self._on_form_change()
+
+    def _sync_player_role_buttons(self) -> None:
+        roles = self._current_player_roles()
+        for player, buttons in self._player_role_buttons.items():
+            selected_role = roles.get(player, "human")
+            for role, button in buttons.items():
+                is_active = role == selected_role
+                if button.isChecked() != is_active:
+                    button.setChecked(is_active)
+
+    def _apply_uarm_support_constraints(self) -> None:
+        roles = self._current_player_roles()
+        white_is_uarm = roles.get("W") == "uarm"
+        black_is_uarm = roles.get("B") == "uarm"
+
+        if white_is_uarm and black_is_uarm:
+            allowed_values = {"both"}
+            fallback_value = "both"
+        elif white_is_uarm:
+            allowed_values = {"white", "both"}
+            fallback_value = "white"
+        elif black_is_uarm:
+            allowed_values = {"black", "both"}
+            fallback_value = "black"
+        else:
+            allowed_values = {"white", "black", "both"}
+            fallback_value = "both"
+
+        support_widget = self._widgets.get("mill_uarm_controlled_players")
+        support_buttons = self._segment_buttons.get("mill_uarm_controlled_players")
+        if not isinstance(support_widget, QComboBox) or support_buttons is None:
+            return
+
+        current_value = support_widget.currentText().strip().lower()
+        if current_value not in allowed_values:
+            self._set_combo_text_safely("mill_uarm_controlled_players", fallback_value)
+
+        for value, button in support_buttons.items():
+            allowed = value in allowed_values
+            button.setEnabled(allowed)
+            if allowed:
+                if button.toolTip() == "Nicht verfügbar für aktuelle Rollenwahl.":
+                    button.setToolTip("")
+            else:
+                button.setToolTip("Nicht verfügbar für aktuelle Rollenwahl.")
+        self._sync_segment_buttons("mill_uarm_controlled_players")
+
+    def _build_camera_tab(self, layout: QVBoxLayout) -> None:
+        camera_box = self._group_box("Kamera")
+        camera_form = self._new_form_layout(camera_box)
+        self._add_line_edit(
+            camera_form,
+            "camera_index",
+            "Kameraindex",
+            note_text="Index der verwendeten Kamera. 0 ist normalerweise die Standardkamera.",
         )
-        mill_card, mill_radio = self._mode_card(
-            "play-mill",
-            "Spielbare Mühle",
-            "Startet die vorhandene Mühle-CLI mit optionaler KI-, Vision- und uArm-Anbindung.",
+        self._add_check(
+            camera_form,
+            "mill_record_game",
+            "Spiel aufzeichnen (Video)",
+            note_text="Speichert beim Start von 'Spielbare Mühle' ein MP4 der Partie.",
         )
+        layout.addWidget(camera_box)
 
-        mode_group.addButton(vision_radio)
-        mode_group.addButton(mill_radio)
-        mode_layout.addWidget(vision_card)
-        mode_layout.addWidget(mill_card)
-        layout.addWidget(mode_box)
-
-        action_box = self._group_box("Schnellaktionen")
-        action_layout = QVBoxLayout(action_box)
-        action_layout.setContentsMargins(12, 14, 12, 12)
-        action_layout.setSpacing(8)
-
-        actions_row = QHBoxLayout()
-        actions_row.setSpacing(8)
-        self._start_button = QPushButton("Ausgewählten Modus starten")
-        self._start_button.setObjectName("PrimaryButton")
-        self._start_button.clicked.connect(self._start_process)
-        self._stop_button = QPushButton("Stoppen")
-        self._stop_button.setObjectName("DangerButton")
-        self._stop_button.clicked.connect(self._stop_process)
-
-        save_btn = QPushButton("Einstellungen speichern")
-        save_btn.clicked.connect(self._save_settings)
-        load_btn = QPushButton("Gespeicherte laden")
-        load_btn.clicked.connect(self._reload_saved_settings)
-
-        actions_row.addWidget(self._start_button)
-        actions_row.addWidget(self._stop_button)
-        actions_row.addWidget(save_btn)
-        actions_row.addWidget(load_btn)
-        actions_row.addStretch(1)
-        action_layout.addLayout(actions_row)
-
-        self._summary_label = QLabel("")
-        self._summary_label.setWordWrap(True)
-        self._summary_label.setObjectName("MutedText")
-        self._hint_label = QLabel("")
-        self._hint_label.setWordWrap(True)
-        self._hint_label.setObjectName("MutedText")
-        action_layout.addWidget(self._summary_label)
-        action_layout.addWidget(self._hint_label)
-        layout.addWidget(action_box)
-
-        state_box = self._group_box("Launcher-Zustand")
-        state_layout = QVBoxLayout(state_box)
-        state_layout.setContentsMargins(12, 14, 12, 12)
-        state_layout.setSpacing(8)
-        state_layout.addWidget(self._section_label("Einstellungsdatei"))
-        self._settings_file_label = QLabel(str(self.settings_file))
-        self._settings_file_label.setWordWrap(True)
-        self._settings_file_label.setObjectName("MutedText")
-        state_layout.addWidget(self._settings_file_label)
-
-        reset_btn = QPushButton("Standardwerte wiederherstellen")
-        reset_btn.clicked.connect(self._reset_defaults)
-        state_layout.addWidget(reset_btn, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(state_box)
-
-        self._mode_buttons = {"vision-loop": vision_radio, "play-mill": mill_radio}
-        for radio in self._mode_buttons.values():
-            radio.toggled.connect(self._on_form_change)
-
-    def _mode_card(self, value: str, title: str, description: str) -> tuple[QFrame, QRadioButton]:
-        card = QFrame()
-        card.setObjectName("ModeCard")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(10, 10, 10, 10)
-        card_layout.setSpacing(4)
-
-        radio = QRadioButton(title)
-        radio.setProperty("mode_value", value)
-        desc = QLabel(description)
-        desc.setWordWrap(True)
-        desc.setObjectName("MutedText")
-
-        card_layout.addWidget(radio)
-        card_layout.addWidget(desc)
-        return card, radio
-
-    def _build_general_tab(self, layout: QVBoxLayout) -> None:
-        runtime_box = self._group_box("Allgemeine Laufzeit")
-        runtime_form = QFormLayout(runtime_box)
-        runtime_form.setContentsMargins(12, 16, 12, 12)
-        runtime_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        runtime_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        runtime_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        self._add_line_edit(runtime_form, "camera_index", "Kameraindex")
-        self._add_note(runtime_form, "Wird für Vision-Loop und die Vision-Brücke im Mühle-Modus verwendet.")
-        layout.addWidget(runtime_box)
-
-        note_box = self._group_box("Hinweise")
-        note_layout = QVBoxLayout(note_box)
-        note_layout.setContentsMargins(12, 14, 12, 12)
-        note_layout.setSpacing(6)
-        note = QLabel(
-            "Der Launcher startet die bestehenden CLI-Modi als Unterprozess. Dadurch bleibt die aktuelle Backend-Logik unverändert und die GUI ist eine saubere Steueroberfläche darüber."
+        vision_box = self._group_box("Vision-Brücke")
+        vision_form = self._new_form_layout(vision_box)
+        self._add_line_edit(
+            vision_form,
+            "mill_vision_attempts",
+            "Scan-Versuche",
+            note_text="Anzahl der Scan-Wiederholungen, wenn die Kamera einen Zustand nicht sicher erkennt.",
         )
-        note.setWordWrap(True)
-        note.setObjectName("MutedText")
-        note_layout.addWidget(note)
-        layout.addWidget(note_box)
+        self._add_check(
+            vision_form,
+            "mill_debug_vision",
+            "Debug-Logging für Vision-Zuordnung",
+            note_text="Schreibt zusätzliche Vision-Details in die Logs, um Erkennung und Zuordnung zu prüfen.",
+        )
+        layout.addWidget(vision_box)
 
     def _build_mill_tab(self, layout: QVBoxLayout) -> None:
         game_box = self._group_box("Spielablauf")
         game_form = self._new_form_layout(game_box)
-        self._add_combo(game_form, "mill_mode", "Spielmodus", ["human-vs-human", "human-vs-ai", "ai-vs-ai"])
-        self._add_combo(game_form, "mill_human_color", "Mensch-Farbe", ["W", "B"])
-        self._add_combo(game_form, "mill_human_input", "Mensch-Eingabe", ["manual", "vision"])
-        self._add_line_edit(game_form, "mill_max_plies", "Max. Halbzüge")
-        self._add_note(game_form, "0 = unbegrenzt (keine Begrenzung der Halbzüge).")
+        self._add_line_edit(
+            game_form,
+            "mill_max_plies",
+            "Max. Halbzüge",
+            note_text="Maximale Anzahl an Halbzügen. 0 bedeutet keine Begrenzung.",
+        )
         layout.addWidget(game_box)
 
         rules_box = self._group_box("Regeln")
         rules_layout = QVBoxLayout(rules_box)
         rules_layout.setContentsMargins(12, 14, 12, 12)
         rules_layout.setSpacing(6)
-        self._add_check(rules_layout, "mill_flying", "Flying-Regel aktivieren")
-        self._add_check(rules_layout, "mill_threefold_repetition", "Remis bei Dreifachwiederholung aktivieren")
-        self._add_check(rules_layout, "mill_no_capture_draw", "Remis ohne Schlagserie aktivieren")
+        self._add_check(
+            rules_layout,
+            "mill_flying",
+            "Flying-Regel aktivieren",
+            note_text="Erlaubt einer Farbe mit drei Steinen das Springen auf jedes freie Feld.",
+        )
+        self._add_check(
+            rules_layout,
+            "mill_threefold_repetition",
+            "Remis bei Dreifachwiederholung aktivieren",
+            note_text="Beendet die Partie remis, wenn dieselbe Stellung dreimal erreicht wird.",
+        )
+        self._add_check(
+            rules_layout,
+            "mill_no_capture_draw",
+            "Remis ohne Schlagserie aktivieren",
+            note_text="Aktiviert ein Remis, wenn über viele Halbzüge kein Stein geschlagen wird.",
+        )
 
         draw_form = QFormLayout()
+        draw_form.setHorizontalSpacing(12)
+        draw_form.setVerticalSpacing(8)
+        draw_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        draw_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         draw_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        self._add_line_edit(draw_form, "mill_no_capture_draw_plies", "Remisgrenze (Halbzüge)")
+        self._add_line_edit(
+            draw_form,
+            "mill_no_capture_draw_plies",
+            "Remisgrenze (Halbzüge)",
+            note_text="Grenzwert in Halbzügen für das Remis ohne Schlagserie.",
+        )
         rules_layout.addLayout(draw_form)
         layout.addWidget(rules_box)
 
     def _build_ai_tab(self, layout: QVBoxLayout) -> None:
         ai_box = self._group_box("KI-Einstellungen")
         ai_form = self._new_form_layout(ai_box)
-        self._add_combo(ai_form, "mill_ai", "Backend", ["heuristic", "alphabeta", "neural"])
-        self._add_line_edit(ai_form, "mill_ai_depth", "AlphaBeta-Tiefe")
-        self._add_line_edit(ai_form, "mill_ai_model", "Modellpfad")
-        self._add_line_edit(ai_form, "mill_ai_temperature", "Temperatur")
-        self._add_line_edit(ai_form, "mill_ai_device", "Gerät")
-        self._add_line_edit(ai_form, "mill_seed", "Seed")
+        self._add_combo(
+            ai_form,
+            "mill_ai",
+            "Backend",
+            ["heuristic", "alphabeta", "neural"],
+            note_text="Wählt das KI-Backend für Computerzüge.",
+        )
+        self._add_line_edit(
+            ai_form,
+            "mill_ai_depth",
+            "AlphaBeta-Tiefe",
+            note_text="Suchtiefe für AlphaBeta. Höhere Werte sind stärker, aber langsamer.",
+        )
+        self._add_line_edit(
+            ai_form,
+            "mill_ai_model",
+            "Modellpfad",
+            note_text="Pfad zum Modell-Checkpoint für das Backend 'neural'.",
+        )
+        self._add_line_edit(
+            ai_form,
+            "mill_ai_temperature",
+            "Temperatur",
+            note_text="Steuert die Zufälligkeit bei der Zugauswahl. 0.0 ist deterministisch.",
+        )
+        self._add_line_edit(
+            ai_form,
+            "mill_ai_device",
+            "Gerät",
+            note_text="Ausführungsgerät für das neuronale Modell, z. B. auto, cpu oder cuda.",
+        )
+        self._add_line_edit(
+            ai_form,
+            "mill_seed",
+            "Seed",
+            note_text="Startwert für reproduzierbare Zufallsentscheidungen.",
+        )
         layout.addWidget(ai_box)
 
         ai_flags = self._group_box("KI-Optionen")
         ai_flags_layout = QVBoxLayout(ai_flags)
         ai_flags_layout.setContentsMargins(12, 14, 12, 12)
         ai_flags_layout.setSpacing(6)
-        self._add_check(ai_flags_layout, "mill_random_tiebreak", "Zufällige Tie-Breaks bei gleicher Bewertung")
-        note = QLabel("Der Modus 'neural' benötigt optionale ML-Abhängigkeiten und einen gültigen Checkpoint.")
-        note.setWordWrap(True)
-        note.setObjectName("MutedText")
-        ai_flags_layout.addWidget(note)
+        self._add_check(
+            ai_flags_layout,
+            "mill_random_tiebreak",
+            "Zufällige Tie-Breaks bei gleicher Bewertung",
+            note_text="Löst gleich bewertete Züge zufällig statt stabil nach Reihenfolge auf.",
+        )
         layout.addWidget(ai_flags)
 
-    def _build_bridge_tab(self, layout: QVBoxLayout) -> None:
-        vision_box = self._group_box("Vision-Brücke")
-        vision_form = self._new_form_layout(vision_box)
-        self._add_line_edit(vision_form, "mill_vision_attempts", "Scan-Versuche")
-        self._add_check(vision_box.layout(), "mill_debug_vision", "Debug-Logging für Vision-Zuordnung")
-        layout.addWidget(vision_box)
-
-        robot_box = self._group_box("uArm-Brücke")
+    def _build_uarm_tab(self, layout: QVBoxLayout) -> None:
+        robot_box = self._group_box("uArm")
         robot_form = self._new_form_layout(robot_box)
-        self._add_line_edit(robot_form, "mill_uarm_port", "Serieller Port")
-        self._add_note(robot_form, "Leer lassen = Backend-Default / Auto-Erkennung.")
-        self._add_line_edit(robot_form, "mill_robot_speed", "Robotergeschwindigkeit")
-        self._add_combo(robot_form, "mill_robot_board_map", "Brett-Mapping", ["default", "homography"])
-        self._add_line_edit(robot_form, "mill_white_reserve", "Weißer Vorrat (X,Y)")
-        self._add_line_edit(robot_form, "mill_black_reserve", "Schwarzer Vorrat (X,Y)")
-        self._add_line_edit(robot_form, "mill_capture_bin", "Ablage für Schläge (X,Y)")
-
-        self._add_check(robot_form, "mill_uarm_move_both_players", "uArm führt Züge beider Seiten aus")
+        self._add_line_edit(
+            robot_form,
+            "mill_uarm_port",
+            "Serieller Port",
+            note_text="Optionaler serieller Port für den uArm. Leer bedeutet Backend-Default bzw. Auto-Erkennung.",
+        )
+        self._add_line_edit(
+            robot_form,
+            "mill_robot_speed",
+            "Robotergeschwindigkeit",
+            note_text="Bewegungsgeschwindigkeit des uArm für Greif- und Ablagevorgänge.",
+        )
+        self._add_combo(
+            robot_form,
+            "mill_robot_board_map",
+            "Brett-Mapping",
+            ["default", "homography"],
+            note_text="Wählt das Brett-Mapping zwischen festen Standardkoordinaten und Homographie-basiertem Mapping.",
+        )
         layout.addWidget(robot_box)
 
     def _build_right_panel(self, layout: QVBoxLayout) -> None:
-        status_row = QHBoxLayout()
+        status_frame = QFrame()
+        status_row = QHBoxLayout(status_frame)
+        status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(8)
         status_row.addWidget(self._section_label("Status"))
         self._status_label = QLabel("Bereit")
         self._status_label.setObjectName("StatusText")
         status_row.addWidget(self._status_label)
         status_row.addStretch(1)
-        layout.addLayout(status_row)
+        self._status_row_frame = status_frame
+        layout.addWidget(status_frame)
 
         camera_box = self._group_box("Kameravorschau")
+        self._camera_box = camera_box
         camera_layout = QVBoxLayout(camera_box)
         camera_layout.setContentsMargins(12, 14, 12, 12)
         camera_layout.setSpacing(8)
@@ -643,6 +845,7 @@ class LauncherWindow(QMainWindow):
         layout.addWidget(camera_box)
 
         command_box = self._group_box("Befehlsvorschau (Spielstart)")
+        self._command_box = command_box
         command_layout = QVBoxLayout(command_box)
         command_layout.setContentsMargins(12, 14, 12, 12)
         self._command_preview = QPlainTextEdit()
@@ -654,12 +857,13 @@ class LauncherWindow(QMainWindow):
         layout.addWidget(command_box)
 
         input_box = self._group_box("Prozess-Eingabe")
+        self._input_box = input_box
         input_layout = QVBoxLayout(input_box)
         input_layout.setContentsMargins(12, 14, 12, 12)
         input_layout.setSpacing(8)
 
         input_note = QLabel(
-            "Für manuelle Mühle-Eingaben (Zugnummer, Enter oder q). Die Eingabe wird an den laufenden Unterprozess gesendet."
+            "Für Mühle-Eingaben in manual/vision (Zugnummer, Enter oder q). Die Eingabe wird an den laufenden Unterprozess gesendet."
         )
         input_note.setWordWrap(True)
         input_note.setObjectName("MutedText")
@@ -681,6 +885,7 @@ class LauncherWindow(QMainWindow):
         layout.addWidget(input_box)
 
         log_box = self._group_box("Live-Ausgabe")
+        self._log_box = log_box
         log_layout = QVBoxLayout(log_box)
         log_layout.setContentsMargins(12, 14, 12, 12)
         log_layout.setSpacing(8)
@@ -691,15 +896,21 @@ class LauncherWindow(QMainWindow):
         clear_btn.clicked.connect(self._clear_log)
         save_btn = QPushButton("Einstellungen speichern")
         save_btn.clicked.connect(self._save_settings)
+        back_btn = QPushButton("Zurück")
+        back_btn.clicked.connect(self._show_launch_screen)
+        self._runtime_back_button = back_btn
         quick_stop = QPushButton("Stoppen")
         quick_stop.setObjectName("DangerButton")
         quick_stop.clicked.connect(self._stop_process)
+        self._stop_button = quick_stop
         quick_start = QPushButton("Start")
         quick_start.setObjectName("PrimaryButton")
         quick_start.clicked.connect(self._start_process)
+        self._quick_start_button = quick_start
 
         toolbar.addWidget(clear_btn)
         toolbar.addWidget(save_btn)
+        toolbar.addWidget(back_btn)
         toolbar.addStretch(1)
         toolbar.addWidget(quick_stop)
         toolbar.addWidget(quick_start)
@@ -713,26 +924,70 @@ class LauncherWindow(QMainWindow):
         log_layout.addWidget(self._log_output, 1)
         layout.addWidget(log_box, 1)
 
-    def _set_dev_panel_visible(self, visible: bool) -> None:
+    def _runtime_requires_stdin(self) -> bool:
+        if self._current_mode() != "play-mill":
+            return False
+        input_widget = self._widgets.get("mill_human_input")
+        mode_widget = self._widgets.get("mill_mode")
+        if not isinstance(input_widget, QComboBox) or not isinstance(mode_widget, QComboBox):
+            return False
+        human_input = input_widget.currentText().strip()
+        mill_mode = mode_widget.currentText().strip()
+        has_human_player = "human" in mill_mode
+        return has_human_player and human_input in {"manual", "vision"}
+
+    def _set_runtime_output_only(self, active: bool) -> None:
+        self._runtime_output_only_active = active
+        if self._left_panel is not None:
+            self._left_panel.setVisible(not active)
+
+        if active:
+            self._camera_preview_active = False
+            self._stop_camera_preview(keep_label_text=True)
+            if self._right_panel is not None:
+                self._right_panel.setVisible(True)
+            if self._body_splitter is not None:
+                self._body_splitter.setSizes([1, 1340])
+
+        show_detail_sections = not active
+        show_input_section = show_detail_sections or self._runtime_requires_stdin()
+        if self._status_row_frame is not None:
+            self._status_row_frame.setVisible(show_detail_sections)
+        if self._camera_box is not None:
+            self._camera_box.setVisible(show_detail_sections)
+        if self._command_box is not None:
+            self._command_box.setVisible(show_detail_sections)
+        if self._input_box is not None:
+            self._input_box.setVisible(show_input_section)
+        if self._runtime_back_button is not None:
+            self._runtime_back_button.setVisible(active)
+
+    def _set_dev_panel_visible(self, visible: bool, *, camera_preview: bool = False) -> None:
         if self._right_panel is None:
             return
+        if not self._runtime_output_only_active and self._left_panel is not None:
+            self._left_panel.setVisible(True)
+        self._camera_preview_active = bool(visible and camera_preview)
         self._right_panel.setVisible(visible)
         if self._body_splitter is not None:
             if visible:
                 self._body_splitter.setSizes([520, 820])
             else:
                 self._body_splitter.setSizes([1, 0])
-        if visible:
+        if self._camera_preview_active:
             self._start_camera_preview()
         else:
             self._stop_camera_preview()
 
     def _show_home_screen(self) -> None:
+        self._set_runtime_output_only(False)
         if self._left_pages is not None:
             self._left_pages.setCurrentIndex(0)
         self._set_dev_panel_visible(False)
 
     def _show_launch_screen(self) -> None:
+        self._set_mode("play-mill")
+        self._set_runtime_output_only(False)
         if self._left_pages is not None:
             self._left_pages.setCurrentIndex(1)
         self._set_dev_panel_visible(False)
@@ -740,6 +995,7 @@ class LauncherWindow(QMainWindow):
         self._refresh_command_preview()
 
     def _show_settings_screen(self) -> None:
+        self._set_runtime_output_only(False)
         if self._left_pages is not None:
             self._left_pages.setCurrentIndex(2)
         self._set_dev_panel_visible(False)
@@ -749,13 +1005,28 @@ class LauncherWindow(QMainWindow):
             self._settings_pages.setCurrentIndex(row)
 
     def _show_dev_screen(self) -> None:
+        self._set_mode("vision-loop")
+        self._set_runtime_output_only(False)
         if self._left_pages is not None:
             self._left_pages.setCurrentIndex(3)
-        self._set_dev_panel_visible(True)
+        self._set_dev_panel_visible(True, camera_preview=True)
+        self._refresh_context()
         self._refresh_command_preview()
 
+    def _start_play_mill_from_launch(self) -> None:
+        self._set_mode("play-mill")
+        self._refresh_context()
+        self._refresh_command_preview()
+        self._start_process()
+
+    def _start_vision_from_dev(self) -> None:
+        self._set_mode("vision-loop")
+        self._refresh_context()
+        self._refresh_command_preview()
+        self._start_process()
+
     def _camera_preview_enabled(self) -> bool:
-        return self._right_panel is not None and self._right_panel.isVisible()
+        return self._camera_preview_active and self._right_panel is not None and self._right_panel.isVisible()
 
     def _camera_preview_interval_timer(self) -> QTimer:
         timer = self._camera_preview_timer
@@ -801,28 +1072,25 @@ class LauncherWindow(QMainWindow):
         detector = self._board_overlay_detector
         if callable(detector):
             return detector
-        from gaming_robot_arm.games.mill.mill_board_detector import detect_board_positions
-
-        self._board_overlay_detector = detect_board_positions
-        return detect_board_positions
+        detector = load_board_overlay_detector()
+        self._board_overlay_detector = detector
+        return detector
 
     def _load_figure_overlay_detector(self):
         detector = self._figure_overlay_detector
         if callable(detector):
             return detector
-        from gaming_robot_arm.vision.figure_detector import detect_figures
-
-        self._figure_overlay_detector = detect_figures
-        return detect_figures
+        detector = load_figure_overlay_detector()
+        self._figure_overlay_detector = detector
+        return detector
 
     def _load_board_pixels_loader(self):
         loader = self._board_pixels_loader
         if callable(loader):
             return loader
-        from gaming_robot_arm.calibration.calibration import load_board_pixels
-
-        self._board_pixels_loader = load_board_pixels
-        return load_board_pixels
+        loader = load_board_pixels_loader()
+        self._board_pixels_loader = loader
+        return loader
 
     def _camera_preview_board_coords(self, *, frame_width: int, frame_height: int) -> dict[str, tuple[int, int]] | None:
         key = (int(frame_width), int(frame_height))
@@ -1082,34 +1350,54 @@ class LauncherWindow(QMainWindow):
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         return form
 
-    def _add_note(self, form: QFormLayout, text: str) -> None:
+    def _make_muted_note(self, text: str, *, left_margin: int = 0) -> QLabel:
         note = QLabel(text)
         note.setWordWrap(True)
         note.setObjectName("MutedText")
-        form.addRow(note)
+        if left_margin > 0:
+            note.setIndent(left_margin)
+        return note
 
-    def _add_line_edit(self, form: QFormLayout, key: str, label: str) -> None:
+    def _add_form_note(self, form: QFormLayout, text: str) -> None:
+        form.addRow(self._make_muted_note(text))
+
+    def _add_line_edit(self, form: QFormLayout, key: str, label: str, note_text: str | None = None) -> None:
         widget = QLineEdit()
         widget.textChanged.connect(self._on_form_change)
         self._widgets[key] = widget
         form.addRow(label, widget)
+        if note_text:
+            self._add_form_note(form, note_text)
 
-    def _add_combo(self, form: QFormLayout, key: str, label: str, values: list[str]) -> None:
+    def _add_combo(
+        self,
+        form: QFormLayout,
+        key: str,
+        label: str,
+        values: list[str],
+        note_text: str | None = None,
+    ) -> None:
         widget = QComboBox()
         widget.setEditable(False)
         widget.addItems(values)
         widget.currentTextChanged.connect(self._on_form_change)
         self._widgets[key] = widget
         form.addRow(label, widget)
+        if note_text:
+            self._add_form_note(form, note_text)
 
-    def _add_check(self, layout, key: str, label: str) -> None:
+    def _add_check(self, layout, key: str, label: str, note_text: str | None = None) -> None:
         widget = QCheckBox(label)
         widget.toggled.connect(self._on_form_change)
         self._widgets[key] = widget
         if isinstance(layout, QFormLayout):
             layout.addRow(widget)
+            if note_text:
+                self._add_form_note(layout, note_text)
             return
         layout.addWidget(widget)
+        if note_text:
+            layout.addWidget(self._make_muted_note(note_text, left_margin=24))
 
     def _apply_theme(self) -> None:
         self.setStyleSheet(
@@ -1233,11 +1521,6 @@ class LauncherWindow(QMainWindow):
                 left: 10px;
                 padding: 0 6px;
             }
-            QFrame#ModeCard {
-                background: #f8fbff;
-                border: 1px solid #dbe5f0;
-                border-radius: 10px;
-            }
             QLabel#MutedText {
                 color: #55657f;
             }
@@ -1252,7 +1535,7 @@ class LauncherWindow(QMainWindow):
             QLabel {
                 color: #0f172a;
             }
-            QCheckBox, QRadioButton {
+            QCheckBox {
                 color: #0f172a;
             }
             QLineEdit, QComboBox, QPlainTextEdit {
@@ -1310,6 +1593,27 @@ class LauncherWindow(QMainWindow):
             QPushButton#PrimaryButton:hover {
                 background: #1e40af;
                 border-color: #1e40af;
+            }
+            QPushButton#SegmentOption {
+                background: #eef2ff;
+                color: #1e3a8a;
+                border-color: #c7d2fe;
+                padding: 9px 12px;
+                font-weight: 600;
+            }
+            QPushButton#SegmentOption:hover {
+                background: #e0e7ff;
+                border-color: #a5b4fc;
+            }
+            QPushButton#SegmentOption:checked {
+                background: #1d4ed8;
+                color: white;
+                border-color: #1d4ed8;
+            }
+            QPushButton#SegmentOption:disabled {
+                background: #f1f5f9;
+                color: #94a3b8;
+                border-color: #e2e8f0;
             }
             QPushButton#DangerButton {
                 background: #b91c1c;
@@ -1372,18 +1676,11 @@ class LauncherWindow(QMainWindow):
         )
 
     def _load_settings(self) -> LauncherSettings:
-        if not self.settings_file.exists():
-            return LauncherSettings()
-        try:
-            payload = json.loads(self.settings_file.read_text(encoding="utf-8"))
-        except Exception:
-            return LauncherSettings()
-        return LauncherSettings.from_payload(payload)
+        return load_launcher_settings(self.settings_file)
 
     def _save_settings(self, quiet: bool = False) -> bool:
         try:
-            payload = self._collect_settings_payload()
-            self.settings_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            save_launcher_settings(self.settings_file, self._collect_settings_payload())
         except Exception as exc:
             if not quiet:
                 QMessageBox.critical(self, "Einstellungen speichern", f"Einstellungen konnten nicht gespeichert werden:\n{exc}")
@@ -1421,6 +1718,7 @@ class LauncherWindow(QMainWindow):
                 value = getattr(settings, key)
                 self._set_widget_value(widget, value)
             self._set_mode(settings.mode)
+            self._normalize_uarm_controlled_players_from_legacy()
         finally:
             self._suppress_form_updates = False
         self._refresh_context()
@@ -1445,11 +1743,13 @@ class LauncherWindow(QMainWindow):
 
     def _collect_settings_payload(self) -> dict[str, object]:
         bool_keys = {
+            "mill_record_game",
             "mill_flying",
             "mill_threefold_repetition",
             "mill_no_capture_draw",
             "mill_random_tiebreak",
             "mill_debug_vision",
+            "mill_uarm_enable_ai_moves",
             "mill_uarm_move_both_players",
         }
         int_keys = {
@@ -1498,58 +1798,101 @@ class LauncherWindow(QMainWindow):
         return widget.isChecked()
 
     def _current_mode(self) -> str:
-        for value, radio in self._mode_buttons.items():
-            if radio.isChecked():
-                return value
-        return "vision-loop"
+        return self._launch_mode if self._launch_mode in {"vision-loop", "play-mill"} else "play-mill"
 
     def _set_mode(self, mode: object) -> None:
-        mode_str = str(mode) if mode is not None else "vision-loop"
-        if mode_str not in self._mode_buttons:
-            mode_str = "vision-loop"
-        self._mode_buttons[mode_str].setChecked(True)
+        mode_str = str(mode) if mode is not None else "play-mill"
+        if mode_str not in {"vision-loop", "play-mill"}:
+            mode_str = "play-mill"
+        self._launch_mode = mode_str
+
+    def _set_combo_text_safely(self, key: str, value: str) -> None:
+        widget = self._widgets.get(key)
+        if not isinstance(widget, QComboBox):
+            return
+        idx = widget.findText(value)
+        if idx < 0 or widget.currentIndex() == idx:
+            return
+        old = self._suppress_form_updates
+        self._suppress_form_updates = True
+        try:
+            widget.setCurrentIndex(idx)
+        finally:
+            self._suppress_form_updates = old
+
+    def _set_check_safely(self, key: str, value: bool) -> None:
+        widget = self._widgets.get(key)
+        if not isinstance(widget, QCheckBox):
+            return
+        new_value = bool(value)
+        if widget.isChecked() == new_value:
+            return
+        old = self._suppress_form_updates
+        self._suppress_form_updates = True
+        try:
+            widget.setChecked(new_value)
+        finally:
+            self._suppress_form_updates = old
+
+    def _normalize_uarm_controlled_players_from_legacy(self) -> None:
+        widget = self._widgets.get("mill_uarm_controlled_players")
+        if not isinstance(widget, QComboBox):
+            return
+        raw_value = widget.currentText().strip().lower()
+        if raw_value in {"white", "black", "both"}:
+            return
+
+        inferred = "black"
+        if raw_value == "none":
+            inferred = "black"
+        else:
+            move_both_widget = self._widgets.get("mill_uarm_move_both_players")
+            ai_moves_widget = self._widgets.get("mill_uarm_enable_ai_moves")
+            mode_widget = self._widgets.get("mill_mode")
+            human_color_widget = self._widgets.get("mill_human_color")
+
+            move_both = move_both_widget.isChecked() if isinstance(move_both_widget, QCheckBox) else False
+            ai_moves = ai_moves_widget.isChecked() if isinstance(ai_moves_widget, QCheckBox) else False
+            mode_value = mode_widget.currentText().strip() if isinstance(mode_widget, QComboBox) else "human-vs-ai"
+            human_color = human_color_widget.currentText().strip() if isinstance(human_color_widget, QComboBox) else "W"
+
+            if move_both:
+                inferred = "both"
+            elif ai_moves:
+                if mode_value == "human-vs-ai":
+                    inferred = "black" if human_color == "W" else "white"
+                elif mode_value == "ai-vs-ai":
+                    inferred = "both"
+
+        self._set_combo_text_safely("mill_uarm_controlled_players", inferred)
+
+    def _sync_legacy_uarm_fields(self) -> None:
+        controlled_widget = self._widgets.get("mill_uarm_controlled_players")
+        if not isinstance(controlled_widget, QComboBox):
+            return
+
+        controlled_value = controlled_widget.currentText().strip().lower()
+        if controlled_value not in {"white", "black", "both"}:
+            controlled_value = "black"
+
+        self._set_check_safely("mill_uarm_enable_ai_moves", controlled_value in {"white", "black", "both"})
+        self._set_check_safely("mill_uarm_move_both_players", controlled_value == "both")
 
     def _on_form_change(self, *_args: object) -> None:
         if self._suppress_form_updates:
             return
         self._refresh_context()
         self._refresh_command_preview()
+        if self._runtime_output_only_active:
+            self._set_runtime_output_only(True)
         if self._camera_preview_enabled():
             self._start_camera_preview()
 
     def _refresh_context(self) -> None:
-        if self._summary_label is None or self._hint_label is None:
-            return
-
-        mode = self._current_mode()
-        if mode == "vision-loop":
-            self._summary_label.setText(
-                "Vision-Laufzeit ausgewählt. Gestartet wird der bestehende Vision-/Runtime-Loop mit dem angegebenen Kameraindex."
-            )
-        else:
-            self._summary_label.setText(
-                "Spielbare Mühle ausgewählt. Der Launcher übergibt Spiel-, Regel-, KI-, Vision- und Roboter-Optionen an die vorhandene CLI-Session."
-            )
-
-        hints: list[str] = []
-        mill_mode = self._widgets["mill_mode"]
-        human_input = self._widgets["mill_human_input"]
-        ai_backend = self._widgets["mill_ai"]
-
-        mill_mode_value = mill_mode.currentText() if isinstance(mill_mode, QComboBox) else ""
-        human_input_value = human_input.currentText() if isinstance(human_input, QComboBox) else ""
-        ai_backend_value = ai_backend.currentText() if isinstance(ai_backend, QComboBox) else ""
-
-        if mode == "play-mill" and "human" in mill_mode_value and human_input_value == "manual":
-            hints.append("Manuelle Züge können im Dev Mode über das Feld 'Prozess-Eingabe' gesendet werden.")
-        if mode == "play-mill" and ai_backend_value == "neural":
-            hints.append("Neural benötigt ML-Abhängigkeiten (z. B. torch) und ein lesbares Modell.")
-        if mode == "play-mill" and human_input_value == "vision":
-            hints.append("Vision-Eingabe benötigt Kalibrierungsdateien und eine verfügbare Kamera.")
-
-        if not hints:
-            hints.append("Einstellungen werden lokal gespeichert und beim nächsten Start wieder geladen.")
-        self._hint_label.setText(" ".join(hints))
+        self._normalize_uarm_controlled_players_from_legacy()
+        self._sync_player_role_buttons()
+        self._apply_uarm_support_constraints()
+        self._sync_legacy_uarm_fields()
 
     def _refresh_command_preview(self) -> None:
         if self._command_preview is None:
@@ -1560,119 +1903,11 @@ class LauncherWindow(QMainWindow):
             preview = f"Ungültige Einstellungen: {exc}"
         self._command_preview.setPlainText(preview)
 
-    def _parse_int(self, key: str, label: str, *, minimum: int | None = None) -> int:
-        raw = self._widget_text(self._widgets[key]).strip()
-        try:
-            value = int(raw)
-        except ValueError as exc:
-            raise ValueError(f"{label} muss eine ganze Zahl sein") from exc
-        if minimum is not None and value < minimum:
-            raise ValueError(f"{label} muss >= {minimum} sein")
-        return value
-
-    def _parse_float(self, key: str, label: str) -> float:
-        raw = self._widget_text(self._widgets[key]).strip()
-        try:
-            return float(raw)
-        except ValueError as exc:
-            raise ValueError(f"{label} muss eine Zahl sein") from exc
-
-    def _parse_optional_xy(self, key: str, label: str) -> str | None:
-        raw = self._widget_text(self._widgets[key]).strip()
-        if not raw:
-            return None
-        parts = [part.strip() for part in raw.split(",")]
-        if len(parts) != 2:
-            raise ValueError(f"{label} muss im Format X,Y angegeben werden")
-        try:
-            float(parts[0])
-            float(parts[1])
-        except ValueError as exc:
-            raise ValueError(f"{label} muss numerische X/Y-Werte enthalten") from exc
-        return raw
-
     def _build_command(self) -> list[str]:
-        mode = self._current_mode()
-        if mode not in {"vision-loop", "play-mill"}:
-            raise ValueError("Modus muss 'vision-loop' oder 'play-mill' sein")
-
-        camera_index = self._parse_int("camera_index", "Kameraindex", minimum=0)
-        cmd = [sys.executable, "-u", str(self.entry_script), "--mode", mode, "--camera-index", str(camera_index)]
-
-        if mode == "vision-loop":
-            return cmd
-
-        mill_mode = self._widget_text(self._widgets["mill_mode"]).strip()
-        human_color = self._widget_text(self._widgets["mill_human_color"]).strip()
-        human_input = self._widget_text(self._widgets["mill_human_input"]).strip()
-        ai_backend = self._widget_text(self._widgets["mill_ai"]).strip()
-        ai_model = self._widget_text(self._widgets["mill_ai_model"]).strip()
-        ai_device = self._widget_text(self._widgets["mill_ai_device"]).strip()
-        robot_board_map = self._widget_text(self._widgets["mill_robot_board_map"]).strip()
-
-        if mill_mode not in {"human-vs-human", "human-vs-ai", "ai-vs-ai"}:
-            raise ValueError("Ungültiger Mühle-Spielmodus")
-        if human_color not in {"W", "B"}:
-            raise ValueError("Mensch-Farbe muss W oder B sein")
-        if human_input not in {"manual", "vision"}:
-            raise ValueError("Mensch-Eingabe muss 'manual' oder 'vision' sein")
-        if ai_backend not in {"heuristic", "alphabeta", "neural"}:
-            raise ValueError("KI-Backend muss heuristic, alphabeta oder neural sein")
-        if robot_board_map not in {"default", "homography"}:
-            raise ValueError("Brett-Mapping muss default oder homography sein")
-
-        max_plies = self._parse_int("mill_max_plies", "Max. Halbzüge", minimum=0)
-        no_capture_draw_plies = self._parse_int("mill_no_capture_draw_plies", "Remisgrenze (Halbzüge)", minimum=1)
-        ai_depth = self._parse_int("mill_ai_depth", "AlphaBeta-Tiefe", minimum=1)
-        ai_temperature = self._parse_float("mill_ai_temperature", "Temperatur")
-        seed = self._parse_int("mill_seed", "Seed")
-        vision_attempts = self._parse_int("mill_vision_attempts", "Scan-Versuche", minimum=1)
-        robot_speed = self._parse_int("mill_robot_speed", "Robotergeschwindigkeit", minimum=1)
-
-        white_reserve = self._parse_optional_xy("mill_white_reserve", "Weißer Vorrat")
-        black_reserve = self._parse_optional_xy("mill_black_reserve", "Schwarzer Vorrat")
-        capture_bin = self._parse_optional_xy("mill_capture_bin", "Ablage für Schläge")
-
-        def add_bool(flag: str, value: bool) -> None:
-            cmd.append(f"--{flag}" if value else f"--no-{flag}")
-
-        cmd.extend(["--game-mode", mill_mode])
-        cmd.extend(["--human-color", human_color])
-        cmd.extend(["--human-input", human_input])
-        cmd.extend(["--max-plies", str(max_plies)])
-        add_bool("flying", self._widget_bool(self._widgets["mill_flying"]))
-        add_bool("threefold-repetition", self._widget_bool(self._widgets["mill_threefold_repetition"]))
-        add_bool("no-capture-draw", self._widget_bool(self._widgets["mill_no_capture_draw"]))
-        cmd.extend(["--no-capture-draw-plies", str(no_capture_draw_plies)])
-
-        cmd.extend(["--ai", ai_backend])
-        cmd.extend(["--ai-depth", str(ai_depth)])
-        if ai_model:
-            cmd.extend(["--ai-model", ai_model])
-        cmd.extend(["--ai-temperature", str(ai_temperature)])
-        if ai_device:
-            cmd.extend(["--ai-device", ai_device])
-        add_bool("random-tiebreak", self._widget_bool(self._widgets["mill_random_tiebreak"]))
-        cmd.extend(["--seed", str(seed)])
-
-        cmd.extend(["--vision-attempts", str(vision_attempts)])
-        add_bool("debug-vision", self._widget_bool(self._widgets["mill_debug_vision"]))
-
-        uarm_port = self._widget_text(self._widgets["mill_uarm_port"]).strip()
-        if uarm_port:
-            cmd.extend(["--uarm-port", uarm_port])
-        add_bool("uarm-move-both-players", self._widget_bool(self._widgets["mill_uarm_move_both_players"]))
-        cmd.extend(["--robot-speed", str(robot_speed)])
-        cmd.extend(["--robot-board-map", robot_board_map])
-
-        if white_reserve:
-            cmd.extend(["--white-reserve", white_reserve])
-        if black_reserve:
-            cmd.extend(["--black-reserve", black_reserve])
-        if capture_bin:
-            cmd.extend(["--capture-bin", capture_bin])
-
-        return cmd
+        payload = self._collect_settings_payload()
+        payload["mode"] = self._current_mode()
+        settings = LauncherSettings.from_payload(payload)
+        return build_command(settings, python_executable=sys.executable, entry_script=self.entry_script)
 
     def _start_process(self) -> None:
         if self._is_process_running():
@@ -1688,29 +1923,24 @@ class LauncherWindow(QMainWindow):
 
         self._save_settings(quiet=True)
         self._clear_stdin()
+        self._stop_requested = False
+        self._stop_force_killed = False
+        self._stop_request_id += 1
         self._append_log(f"\n[launcher] Starte Prozess:\n{shlex.join(cmd)}\n\n")
 
         if self._process is None:
             self._setup_process()
         assert self._process is not None
 
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONUNBUFFERED", "1")
-        env.insert("PYTHONUTF8", "1")
-        self._process.setProcessEnvironment(env)
-        self._process.setWorkingDirectory(str(self.project_root))
-        self._process.setProgram(cmd[0])
-        self._process.setArguments(cmd[1:])
-
-        self._process.start()
-        if not self._process.waitForStarted(1500):
-            error = self._process.errorString() or "Unbekannter Startfehler"
+        error = start_qprocess(self._process, cmd=cmd, project_root=self.project_root)
+        if error is not None:
             self._append_log(f"[launcher] Start fehlgeschlagen: {error}\n")
             QMessageBox.critical(self, "Start fehlgeschlagen", f"Prozess konnte nicht gestartet werden:\n{error}")
             self._set_status("Start fehlgeschlagen")
             self._sync_runtime_controls()
             return
 
+        self._set_runtime_output_only(True)
         self._set_status(f"Läuft ({self._current_mode()})")
         self._sync_runtime_controls()
 
@@ -1719,15 +1949,30 @@ class LauncherWindow(QMainWindow):
             self._set_status("Kein laufender Prozess")
             self._sync_runtime_controls()
             return
+        self._stop_requested = True
+        self._stop_force_killed = False
+        self._stop_request_id += 1
+        stop_id = self._stop_request_id
         self._append_log("[launcher] Prozess wird beendet ...\n")
-        self._process.terminate()
+        self._process.closeWriteChannel()
         self._set_status("Wird beendet ...")
-        QTimer.singleShot(1500, self._kill_if_still_running)
+        QTimer.singleShot(450, lambda: self._terminate_if_still_running(stop_id))
+        QTimer.singleShot(2200, lambda: self._kill_if_still_running(stop_id))
 
-    def _kill_if_still_running(self) -> None:
+    def _terminate_if_still_running(self, stop_id: int) -> None:
+        if stop_id != self._stop_request_id or not self._stop_requested:
+            return
+        if not self._is_process_running() or self._process is None:
+            return
+        self._process.terminate()
+
+    def _kill_if_still_running(self, stop_id: int) -> None:
+        if stop_id != self._stop_request_id or not self._stop_requested:
+            return
         if not self._is_process_running() or self._process is None:
             return
         self._append_log("[launcher] Prozess reagiert nicht, erzwinge Beenden.\n")
+        self._stop_force_killed = True
         self._process.kill()
 
     def _is_process_running(self) -> bool:
@@ -1744,14 +1989,26 @@ class LauncherWindow(QMainWindow):
 
     def _on_process_finished(self, exit_code: int, _exit_status) -> None:
         self._read_process_output()
-        self._append_log(f"\n[launcher] Prozess beendet mit Exit-Code {exit_code}\n")
-        self._set_status(f"Beendet (Code {exit_code})")
+        if self._stop_requested:
+            if self._stop_force_killed:
+                self._append_log("\n[launcher] Prozess gestoppt (erzwungen).\n")
+                self._set_status("Gestoppt (erzwungen)")
+            else:
+                self._append_log("\n[launcher] Prozess gestoppt.\n")
+                self._set_status("Gestoppt")
+        else:
+            self._append_log(f"\n[launcher] Prozess beendet mit Exit-Code {exit_code}\n")
+            self._set_status(f"Beendet (Code {exit_code})")
+        self._stop_requested = False
+        self._stop_force_killed = False
         self._sync_runtime_controls()
 
     def _on_process_error(self, error) -> None:
         # Normalerweise folgt darauf ein finished-Signal. Wir loggen den Zustand trotzdem,
         # damit Startprobleme im UI sichtbar sind.
         if self._process is None:
+            return
+        if self._stop_requested and error == QProcess.ProcessError.Crashed:
             return
         self._append_log(f"[launcher] Prozessfehler: {error} | {self._process.errorString()}\n")
         self._sync_runtime_controls()
@@ -1809,8 +2066,12 @@ class LauncherWindow(QMainWindow):
         running = self._is_process_running()
         if self._start_button is not None:
             self._start_button.setEnabled(not running)
+        if self._quick_start_button is not None:
+            self._quick_start_button.setEnabled(not running)
         if self._stop_button is not None:
             self._stop_button.setEnabled(running)
+        if self._runtime_back_button is not None:
+            self._runtime_back_button.setEnabled(not running)
         if self._send_button is not None:
             self._send_button.setEnabled(running)
         if self._stdin_input is not None:
@@ -1822,9 +2083,14 @@ class LauncherWindow(QMainWindow):
                 event.ignore()
                 return
             self._append_log("[launcher] Launcher wird geschlossen, Prozess wird beendet ...\n")
+            self._stop_requested = True
+            self._stop_force_killed = False
+            self._stop_request_id += 1
+            self._process.closeWriteChannel()
             self._process.terminate()
             if not self._process.waitForFinished(2000):
                 self._append_log("[launcher] Erzwinge Beenden beim Schließen ...\n")
+                self._stop_force_killed = True
                 self._process.kill()
                 self._process.waitForFinished(1000)
 

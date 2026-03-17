@@ -22,6 +22,18 @@ ui = [
     "PySide6>=6.6",
 ]
 
+[project.scripts]
+gra = "gaming_robot_arm.__main__:main"
+gra-mill-play = "gaming_robot_arm.games.mill.cli.play:main"
+gra-mill-benchmark = "gaming_robot_arm.games.mill.cli.benchmark:main"
+gra-mill-generate-teacher = "gaming_robot_arm.games.mill.cli.generate_teacher_data:main"
+gra-mill-generate-selfplay = "gaming_robot_arm.games.mill.cli.generate_selfplay_data:main"
+gra-mill-train = "gaming_robot_arm.games.mill.cli.train:main"
+gra-mill-watchdog = "gaming_robot_arm.games.mill.cli.train_watchdog:main"
+gra-mill-selfplay-loop = "gaming_robot_arm.games.mill.cli.selfplay_loop:main"
+gra-mill-inspect-checkpoint = "gaming_robot_arm.games.mill.cli.inspect_checkpoint:main"
+gra-mill-evolve = "gaming_robot_arm.games.mill.cli.evolve_population:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gaming_robot_arm*"]

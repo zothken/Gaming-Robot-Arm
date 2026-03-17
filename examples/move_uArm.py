@@ -14,8 +14,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from gaming_robot_arm.calibration.mill_default_calibration import get_mill_uarm_positions
-from gaming_robot_arm.config import PICK_Z, PLACE_Z, SAFE_Z, UARM_CALLBACK_THREADS, UARM_PORT
+from gaming_robot_arm.calibration.mill_default_calibration import (
+    MILL_PICK_Z,
+    MILL_PLACE_Z,
+    get_mill_uarm_positions,
+)
+from gaming_robot_arm.config import SAFE_Z, UARM_CALLBACK_THREADS, UARM_PORT
 from gaming_robot_arm import VisionControlRuntime
 from gaming_robot_arm.utils.logger import logger
 from gaming_robot_arm.vision.recording import recording_session
@@ -119,19 +123,23 @@ def main(port: str | None = UARM_PORT) -> None:
             stop_recording = Event() if record_enabled else None
 
             if record_enabled:
+                assert session is not None
+                assert stop_recording is not None
+                active_session = session
+                active_stop_recording = stop_recording
+
                 def _recording_worker() -> None:
-                    assert session is not None
-                    while not stop_recording.is_set():
+                    while not active_stop_recording.is_set():
                         try:
-                            frame = session.read()
+                            frame = active_session.read()
                         except RuntimeError as exc:
                             logger.warning("Kamera-Lesefehler, stoppe Aufnahme: %s", exc)
                             break
-                        session.write(frame)
+                        active_session.write(frame)
 
                 recorder = Thread(target=_recording_worker, daemon=True)
                 recorder.start()
-                logger.info("Aufnahme laeuft: %s", session.output_path)
+                logger.info("Aufnahme laeuft: %s", active_session.output_path)
             else:
                 recorder = None
                 logger.info("Aufnahme deaktiviert.")
@@ -198,11 +206,11 @@ def main(port: str | None = UARM_PORT) -> None:
                     if not z_toggle_active:
                         stored_prev_z = last_z_position if last_z_position is not None else current_pos[2]
                         if pump_on:
-                            target_z = PLACE_Z
-                            logger.info("Pumpe aktiv – senke auf PLACE_Z=%.1f.", PLACE_Z)
+                            target_z = MILL_PLACE_Z
+                            logger.info("Pumpe aktiv – senke auf PLACE_Z=%.1f.", MILL_PLACE_Z)
                         else:
-                            target_z = PICK_Z
-                            logger.info("Wechsle auf PICK_Z=%.1f bei gleichem x/y.", PICK_Z)
+                            target_z = MILL_PICK_Z
+                            logger.info("Wechsle auf PICK_Z=%.1f bei gleichem x/y.", MILL_PICK_Z)
                         z_toggle_active = True
                     else:
                         target_z = stored_prev_z if stored_prev_z is not None else SAFE_Z

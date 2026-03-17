@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Mapping
 
 import cv2
 import numpy as np
@@ -14,7 +14,7 @@ from gaming_robot_arm.utils.logger import logger
 
 DEFAULT_H_PATH = HOMOGRAPHY_PATH
 
-def load_homography(path: Path | None = None) -> tuple[np.ndarray | None, Dict[str, Tuple[float, float]]]:
+def load_homography(path: Path | None = None) -> tuple[np.ndarray | None, dict[str, tuple[float, float]]]:
     """
     Laedt die Kamera→Roboter-Homography-Datei und die zugehoerigen Brettpixel.
 
@@ -46,8 +46,8 @@ def img_to_robot(H: np.ndarray, u: float, v: float) -> tuple[float, float]:
     return float(x), float(y)
 
 def fit_homography_from_correspondences(
-    board_pixels: Dict[str, Tuple[float, float]],
-    board_robot: Dict[str, Tuple[float, float]],
+    board_pixels: Mapping[str, tuple[float, float]],
+    board_robot: Mapping[str, tuple[float, float]],
     *,
     min_pairs: int = 4,
 ) -> np.ndarray | None:
