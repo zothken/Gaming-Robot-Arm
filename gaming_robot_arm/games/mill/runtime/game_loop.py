@@ -43,9 +43,11 @@ from .robot_bridge import (
 )
 from .vision_bridge import (
     MillVisionBridge,
+    VisionTriggerMode,
     _LiveVisionSession,
     infer_moves_from_observation,
 )
+from .voice_bridge import VoiceBridge
 
 if TYPE_CHECKING:
     from gaming_robot_arm.vision.recording import RecordingSession
@@ -176,6 +178,27 @@ def add_mill_cli_arguments(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Aktiviert ausfuehrliches Logging der Vision-Zuordnung.",
+    )
+    other_group.add_argument(
+        "--vision-trigger",
+        dest="mill_vision_trigger",
+        choices=("manual", "auto"),
+        default="auto",
+        help="Ausloeser fuer Vision-Zuege: manueller Scan per Enter oder automatischer Trigger auf Brettaenderung.",
+    )
+    other_group.add_argument(
+        "--vision-detector",
+        dest="mill_vision_detector",
+        choices=("hough", "classifier"),
+        default="hough",
+        help="Figuren-Erkennung: klassisches HoughCircles oder KI-Classifier.",
+    )
+    other_group.add_argument(
+        "--vision-classifier-model",
+        dest="mill_vision_classifier_model",
+        type=str,
+        default="",
+        help="Pfad zum Classifier-Modell (nur bei --vision-detector classifier).",
     )
 
     other_group.add_argument(
@@ -376,35 +399,89 @@ def _read_user_input(prompt: str) -> str:
         raise KeyboardInterrupt from exc
 
 
+def _scan_human_move_via_vision(
+    *,
+    session: MillGameSession,
+    vision_bridge: MillVisionBridge,
+    legal_moves: Sequence[Move],
+    vision_session: RecordingSession | _LiveVisionSession | None,
+    prompt: str,
+) -> Move | None:
+    _read_user_input(prompt)
+    observed = vision_bridge.observe_board(session=vision_session)
+    matches = infer_moves_from_observation(
+        rules=session.rules,
+        state=session.state,
+        legal_moves=legal_moves,
+        observed_board=observed,
+    )
+    if len(matches) == 1:
+        move = matches[0]
+        logger.info("Vision hat Zug erkannt: %s", _format_move(move))
+        print(f"Vision hat Zug erkannt: {_format_move(move)}")
+        return move
+
+    if len(matches) == 0:
+        logger.warning("Vision-Scan passt zu keinem legalen Zug; falle auf manuelle Auswahl zurueck.")
+    else:
+        logger.warning("Vision-Scan passt zu %s legalen Zuegen; manuelle Aufloesung erforderlich.", len(matches))
+    return None
+
+
 def _choose_human_move(
     *,
     session: MillGameSession,
     controller: PlayerController,
     vision_bridge: MillVisionBridge | None,
+    voice_bridge: VoiceBridge | None = None,
     vision_session: RecordingSession | _LiveVisionSession | None = None,
+    vision_trigger: VisionTriggerMode = "auto",
 ) -> Move:
     legal_moves = list(session.legal_moves())
     if not legal_moves:
         raise RuntimeError("Keine legalen Zuege fuer den menschlichen Zug verfuegbar.")
 
-    if controller.input_mode == "vision" and vision_bridge is not None:
-        _read_user_input("Zug auf dem realen Brett ausfuehren und dann Enter zum Scannen druecken: ")
-        observed = vision_bridge.observe_board(session=vision_session)
-        matches = infer_moves_from_observation(
-            rules=session.rules,
-            state=session.state,
-            legal_moves=legal_moves,
-            observed_board=observed,
-        )
-        if len(matches) == 1:
-            move = matches[0]
-            logger.info("Vision hat Zug erkannt: %s", _format_move(move))
-            return move
+    if controller.input_mode == "voice" and voice_bridge is not None:
+        return voice_bridge.listen_for_move(legal_moves)
 
-        if len(matches) == 0:
-            logger.warning("Vision-Scan passt zu keinem legalen Zug; falle auf manuelle Auswahl zurueck.")
+    if controller.input_mode == "vision" and vision_bridge is not None:
+        if vision_trigger == "auto":
+            result = vision_bridge.observe_move_automatically(
+                rules=session.rules,
+                state=session.state,
+                legal_moves=legal_moves,
+                session=vision_session,
+                status_callback=print,
+            )
+            if result.move is not None:
+                logger.info("Vision hat Zug erkannt: %s", _format_move(result.move))
+                print(f"Vision hat Zug erkannt: {_format_move(result.move)}")
+                return result.move
+
+            logger.warning(
+                "Automatische Vision-Zugerkennung fehlgeschlagen (%s); falle auf manuellen Scan zurueck.",
+                result.reason,
+            )
+            print("Auto-Erkennung unklar, manueller Scan")
+            move = _scan_human_move_via_vision(
+                session=session,
+                vision_bridge=vision_bridge,
+                legal_moves=legal_moves,
+                vision_session=vision_session,
+                prompt="Auto-Erkennung unklar. Enter fuer manuellen Scan druecken: ",
+            )
+            if move is not None:
+                return move
         else:
-            logger.warning("Vision-Scan passt zu %s legalen Zuegen; manuelle Aufloesung erforderlich.", len(matches))
+            move = _scan_human_move_via_vision(
+                session=session,
+                vision_bridge=vision_bridge,
+                legal_moves=legal_moves,
+                vision_session=vision_session,
+                prompt="Zug auf dem realen Brett ausfuehren und dann Enter zum Scannen druecken: ",
+            )
+            if move is not None:
+                return move
 
     return _prompt_human_move(legal_moves)
 
@@ -445,8 +522,16 @@ def run_mill_game(args: argparse.Namespace) -> int:
             attempts=args.mill_vision_attempts,
             debug_assignments=args.mill_debug_vision,
             camera_index=args.camera_index,
+            detector_backend=args.mill_vision_detector,
+            classifier_model_path=args.mill_vision_classifier_model,
         )
         logger.info("Vision-Bridge fuer menschliche Zug-Inferenz aktiviert.")
+
+    voice_mode = any(ctrl.kind == "human" and ctrl.input_mode == "voice" for ctrl in controllers.values())
+    voice_bridge: VoiceBridge | None = None
+    if voice_mode:
+        voice_bridge = VoiceBridge()
+        logger.info("Voice-Bridge fuer menschliche Zug-Eingabe aktiviert.")
 
     robot_bridge: MillRobotBridge | None = None
     if robot_bridge_enabled:
@@ -464,7 +549,10 @@ def run_mill_game(args: argparse.Namespace) -> int:
             robot_bridge = None
 
     print("Spielbare Muehle-Sitzung gestartet")
-    print(f"Modus: {args.mill_mode} | KI: {args.mill_ai} | Menschliche Eingabe: {args.mill_human_input}")
+    human_input_desc = str(args.mill_human_input)
+    if human_input_desc == "vision":
+        human_input_desc = f"{human_input_desc} ({args.mill_vision_trigger})"
+    print(f"Modus: {args.mill_mode} | KI: {args.mill_ai} | Menschliche Eingabe: {human_input_desc}")
     print("Jederzeit mit Strg+C oder per 'q' bei menschlicher Eingabe abbrechen.")
 
     try:
@@ -517,6 +605,8 @@ def run_mill_game(args: argparse.Namespace) -> int:
                             attempts=args.mill_vision_attempts,
                             debug_assignments=args.mill_debug_vision,
                             camera_index=args.camera_index,
+                            detector_backend=args.mill_vision_detector,
+                            classifier_model_path=args.mill_vision_classifier_model,
                         )
                         vision_bridge.board_pixels = fallback_bridge.board_pixels
                         vision_bridge.labels_order = fallback_bridge.labels_order
@@ -543,7 +633,9 @@ def run_mill_game(args: argparse.Namespace) -> int:
                         session=session,
                         controller=controller,
                         vision_bridge=vision_bridge,
+                        voice_bridge=voice_bridge,
                         vision_session=vision_session,
+                        vision_trigger=args.mill_vision_trigger,
                     )
                     print(f"{controller.label} waehlt {_format_move(move)}")
 
@@ -579,6 +671,8 @@ def run_mill_game(args: argparse.Namespace) -> int:
     finally:
         if robot_bridge is not None:
             robot_bridge.close()
+        if voice_bridge is not None:
+            voice_bridge.shutdown()
 
 
 def build_parser() -> argparse.ArgumentParser:

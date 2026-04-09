@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .window import launch_launcher
+
+def launch_launcher(*args, **kwargs):
+    from .window import launch_launcher as _launch_launcher
+
+    return _launch_launcher(*args, **kwargs)
 
 __all__ = ["launch_launcher", "Path"]

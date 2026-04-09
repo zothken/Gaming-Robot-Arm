@@ -40,7 +40,4 @@ models/evolution_ab_continued/generations
 *.avi
 
 # Kalibrierungsausgabe
-calibration/board_pixels.json
-
-# Kalibrierungsausgabe
 calibration/cam_to_robot_homography.json

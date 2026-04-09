@@ -90,6 +90,8 @@ class LauncherWindow(QMainWindow):
         self._camera_figure_board_coords_cache: dict[tuple[int, int], dict[str, tuple[int, int]] | None] = {}
         self._camera_figure_board_coords_warned: set[tuple[int, int]] = set()
         self._camera_overlay_error_key: str | None = None
+        self._figure_stabilizer = None
+        self._figure_stabilizer_labels: list = []
         self._stop_requested = False
         self._stop_force_killed = False
         self._stop_request_id = 0
@@ -364,7 +366,7 @@ class LauncherWindow(QMainWindow):
 
     def _build_launch_content(self, layout: QVBoxLayout) -> None:
         self._register_hidden_combo("mill_mode", ["human-vs-human", "human-vs-ai", "ai-vs-ai"], default="human-vs-ai")
-        self._register_hidden_combo("mill_human_input", ["manual", "vision"], default="manual")
+        self._register_hidden_combo("mill_human_input", ["manual", "vision", "voice"], default="manual")
         self._register_hidden_combo(
             "mill_uarm_controlled_players",
             ["white", "black", "both", "none", "legacy"],
@@ -392,9 +394,8 @@ class LauncherWindow(QMainWindow):
             options=[
                 ("Kamera", "vision"),
                 ("Tastatur", "manual"),
+                ("Sprache", "voice"),
             ],
-            disabled_labels=["Sprache"],
-            note_text="Sprachsteuerung ist als Platzhalter sichtbar und wird in einem späteren Schritt ergänzt.",
         )
 
         start_row = QHBoxLayout()
@@ -459,9 +460,12 @@ class LauncherWindow(QMainWindow):
             return existing
         widget = QComboBox(self)
         widget.setEditable(False)
-        widget.addItems(values)
+        for value in values:
+            widget.addItem(value, value)
         widget.setVisible(False)
-        idx = widget.findText(default)
+        idx = widget.findData(default)
+        if idx < 0:
+            idx = widget.findText(default)
         if idx >= 0:
             widget.setCurrentIndex(idx)
         widget.currentTextChanged.connect(self._on_form_change)
@@ -531,7 +535,10 @@ class LauncherWindow(QMainWindow):
         if not isinstance(widget, QComboBox):
             return
         idx = widget.findText(value)
-        if idx < 0 or widget.currentIndex() == idx:
+        if idx < 0:
+            return
+        if widget.currentIndex() == idx:
+            self._sync_segment_buttons(key)
             return
         widget.setCurrentIndex(idx)
 
@@ -662,6 +669,32 @@ class LauncherWindow(QMainWindow):
             "mill_vision_attempts",
             "Scan-Versuche",
             note_text="Anzahl der Scan-Wiederholungen, wenn die Kamera einen Zustand nicht sicher erkennt.",
+        )
+        self._add_combo(
+            vision_form,
+            "mill_vision_trigger",
+            "Vision-Trigger",
+            [
+                ("Automatisch nach Brettaenderung", "auto"),
+                ("Manuell (Enter)", "manual"),
+            ],
+            note_text="Legt fest, ob Vision-Zuege automatisch nach stabiler Brettaenderung oder manuell per Enter-Scan erkannt werden.",
+        )
+        self._add_combo(
+            vision_form,
+            "mill_vision_detector",
+            "Erkennungs-Backend",
+            [
+                ("HoughCircles (klassisch)", "hough"),
+                ("KI-Classifier (MobileNet)", "classifier"),
+            ],
+            note_text="HoughCircles: schnelle klassische Kreiserkennung. Classifier: KI-basierte Figurenklassifikation (erfordert trainiertes Modell).",
+        )
+        self._add_line_edit(
+            vision_form,
+            "mill_vision_classifier_model",
+            "Classifier-Modellpfad",
+            note_text="Pfad zum trainierten Classifier-Modell (.pt). Nur relevant bei KI-Classifier-Backend.",
         )
         self._add_check(
             vision_form,
@@ -839,10 +872,11 @@ class LauncherWindow(QMainWindow):
         camera_placeholder = QLabel("Kameravorschau (Dev Mode)\n\nWird beim Öffnen des Dev Mode gestartet.")
         camera_placeholder.setObjectName("CameraPreviewPlaceholder")
         camera_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        camera_placeholder.setMinimumHeight(180)
+        camera_placeholder.setMinimumHeight(320)
+        camera_placeholder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         camera_layout.addWidget(camera_placeholder)
         self._camera_preview_label = camera_placeholder
-        layout.addWidget(camera_box)
+        layout.addWidget(camera_box, 2)
 
         command_box = self._group_box("Befehlsvorschau (Spielstart)")
         self._command_box = command_box
@@ -863,7 +897,7 @@ class LauncherWindow(QMainWindow):
         input_layout.setSpacing(8)
 
         input_note = QLabel(
-            "Für Mühle-Eingaben in manual/vision (Zugnummer, Enter oder q). Die Eingabe wird an den laufenden Unterprozess gesendet."
+            "Für Mühle-Eingaben und Vision-Fallbacks (Zugnummer, q oder manueller Enter-Scan). Die Eingabe wird an den laufenden Unterprozess gesendet."
         )
         input_note.setWordWrap(True)
         input_note.setObjectName("MutedText")
@@ -1050,6 +1084,8 @@ class LauncherWindow(QMainWindow):
 
     def _on_camera_preview_overlay_change(self, _text: str) -> None:
         self._camera_overlay_error_key = None
+        self._figure_stabilizer = None
+        self._figure_stabilizer_labels = []
         if self._camera_preview_enabled():
             self._update_camera_preview_frame()
 
@@ -1099,7 +1135,7 @@ class LauncherWindow(QMainWindow):
 
         try:
             load_board_pixels = self._load_board_pixels_loader()
-            board_coords = load_board_pixels(frame_size=key)
+            board_coords = load_board_pixels()
             normalized = {str(lbl): (int(x), int(y)) for lbl, (x, y) in board_coords.items()}
             self._camera_figure_board_coords_cache[key] = normalized
             return normalized
@@ -1109,7 +1145,7 @@ class LauncherWindow(QMainWindow):
                 self._camera_figure_board_coords_warned.add(key)
                 self._append_log(
                     "[launcher] Figure-Overlay ohne Feldlabels: keine Brett-Kalibrierung gefunden "
-                    "(board_pixels.json / cam_to_robot_homography.json).\n"
+                    "(cam_to_robot_homography.json).\n"
                 )
             return None
         except Exception as exc:
@@ -1148,11 +1184,34 @@ class LauncherWindow(QMainWindow):
                 board_coords=board_coords,
                 labels_order=labels_order,
                 draw_assignments=bool(board_coords),
+                return_assignments=True,
             )
             if isinstance(result, tuple) and len(result) > 0:
                 annotated = result[0]
             else:
                 annotated = annotated_input
+            raw_assignments = result[4] if isinstance(result, tuple) and len(result) > 4 else []
+
+            if board_coords is not None and labels_order:
+                if self._figure_stabilizer is None or self._figure_stabilizer_labels != labels_order:
+                    from gaming_robot_arm.vision.figure_detector import AssignmentStabilizer
+                    self._figure_stabilizer = AssignmentStabilizer(labels_order)
+                    self._figure_stabilizer_labels = list(labels_order)
+                self._figure_stabilizer.update(raw_assignments)
+                stable_count = len(self._figure_stabilizer.stable_assignments())
+                try:
+                    cv2.putText(  # type: ignore[attr-defined]
+                        annotated,
+                        f"Stabile Zuordnungen: {stable_count}",
+                        (10, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX,  # type: ignore[attr-defined]
+                        0.7,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA,  # type: ignore[attr-defined]
+                    )
+                except Exception:
+                    pass
 
             if board_coords is None:
                 try:
@@ -1213,7 +1272,28 @@ class LauncherWindow(QMainWindow):
         self._stop_camera_preview(keep_label_text=True)
         self._set_camera_preview_message(f"Kameravorschau (Dev Mode)\n\nVerbinde mit Kamera {index} ...")
 
-        capture = cv2.VideoCapture(index)  # type: ignore[operator]
+        # DSHOW-Backend zuerst (Windows) – bessere Codec/Auflösungs-Kompatibilität
+        capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)  # type: ignore[operator]
+        if capture is None or not capture.isOpened():
+            try:
+                if capture is not None:
+                    capture.release()
+            except Exception:
+                pass
+            capture = cv2.VideoCapture(index)  # type: ignore[operator]
+
+        # Auflösung und Codec setzen – analog zu open_camera() in recording.py
+        try:
+            from gaming_robot_arm.config import FRAME_HEIGHT, FRAME_RATE, FRAME_WIDTH
+            if FRAME_WIDTH is not None and FRAME_HEIGHT is not None:
+                if int(FRAME_WIDTH) >= 1280 or int(FRAME_HEIGHT) >= 720:
+                    capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"MJPG"))  # type: ignore[attr-defined]
+                capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(FRAME_WIDTH))  # type: ignore[attr-defined]
+                capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(FRAME_HEIGHT))  # type: ignore[attr-defined]
+            if FRAME_RATE is not None:
+                capture.set(cv2.CAP_PROP_FPS, float(FRAME_RATE))  # type: ignore[attr-defined]
+        except Exception:
+            pass
         try:
             capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # type: ignore[attr-defined]
         except Exception:
@@ -1237,6 +1317,8 @@ class LauncherWindow(QMainWindow):
         self._camera_figure_board_coords_cache.clear()
         self._camera_figure_board_coords_warned.clear()
         self._camera_overlay_error_key = None
+        self._figure_stabilizer = None
+        self._figure_stabilizer_labels = []
         timer.start()
         self._update_camera_preview_frame()
 
@@ -1253,6 +1335,8 @@ class LauncherWindow(QMainWindow):
             except Exception:
                 pass
         self._camera_overlay_error_key = None
+        self._figure_stabilizer = None
+        self._figure_stabilizer_labels = []
 
         if not keep_label_text:
             self._set_camera_preview_message("Kameravorschau (Dev Mode)\n\nDev Mode öffnen, um die Vorschau zu starten.")
@@ -1374,12 +1458,17 @@ class LauncherWindow(QMainWindow):
         form: QFormLayout,
         key: str,
         label: str,
-        values: list[str],
+        values: list[str | tuple[str, str]],
         note_text: str | None = None,
     ) -> None:
         widget = QComboBox()
         widget.setEditable(False)
-        widget.addItems(values)
+        for entry in values:
+            if isinstance(entry, tuple):
+                label_text, stored_value = entry
+            else:
+                label_text = stored_value = entry
+            widget.addItem(label_text, stored_value)
         widget.currentTextChanged.connect(self._on_form_change)
         self._widgets[key] = widget
         form.addRow(label, widget)
@@ -1730,7 +1819,9 @@ class LauncherWindow(QMainWindow):
             return
         if isinstance(widget, QComboBox):
             text = "" if value is None else str(value)
-            idx = widget.findText(text)
+            idx = widget.findData(text)
+            if idx < 0:
+                idx = widget.findText(text)
             if idx >= 0:
                 widget.setCurrentIndex(idx)
             elif widget.count() > 0:
@@ -1787,7 +1878,8 @@ class LauncherWindow(QMainWindow):
         if isinstance(widget, QLineEdit):
             return widget.text()
         if isinstance(widget, QComboBox):
-            return widget.currentText()
+            data = widget.currentData()
+            return str(data) if data is not None else widget.currentText()
         if isinstance(widget, QCheckBox):
             return "true" if widget.isChecked() else "false"
         raise TypeError(f"Nicht unterstützter Widget-Typ: {type(widget)!r}")
@@ -1810,7 +1902,9 @@ class LauncherWindow(QMainWindow):
         widget = self._widgets.get(key)
         if not isinstance(widget, QComboBox):
             return
-        idx = widget.findText(value)
+        idx = widget.findData(value)
+        if idx < 0:
+            idx = widget.findText(value)
         if idx < 0 or widget.currentIndex() == idx:
             return
         old = self._suppress_form_updates

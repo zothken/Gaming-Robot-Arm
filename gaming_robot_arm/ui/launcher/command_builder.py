@@ -44,6 +44,7 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
     mill_mode = str(settings.mill_mode).strip()
     human_color = str(settings.mill_human_color).strip()
     human_input = str(settings.mill_human_input).strip()
+    vision_trigger = str(settings.mill_vision_trigger).strip()
     uarm_controlled_players = str(settings.mill_uarm_controlled_players).strip().lower()
     ai_backend = str(settings.mill_ai).strip()
     ai_model = str(settings.mill_ai_model).strip()
@@ -54,8 +55,10 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
         raise ValueError("Ungültiger Mühle-Spielmodus")
     if human_color not in {"W", "B"}:
         raise ValueError("Mensch-Farbe muss W oder B sein")
-    if human_input not in {"manual", "vision"}:
-        raise ValueError("Mensch-Eingabe muss 'manual' oder 'vision' sein")
+    if human_input not in {"manual", "vision", "voice"}:
+        raise ValueError("Mensch-Eingabe muss 'manual', 'vision' oder 'voice' sein")
+    if vision_trigger not in {"manual", "auto"}:
+        raise ValueError("Vision-Trigger muss 'manual' oder 'auto' sein")
     if uarm_controlled_players not in {"none", "white", "black", "both", "legacy"}:
         raise ValueError("uArm-Support muss none, white, black, both oder legacy sein")
     if ai_backend not in {"heuristic", "alphabeta", "neural"}:
@@ -93,6 +96,15 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
 
     cmd.extend(["--vision-attempts", str(_as_int(settings.mill_vision_attempts, "Scan-Versuche", minimum=1))])
     add_bool("debug-vision", bool(settings.mill_debug_vision))
+    cmd.extend(["--vision-trigger", vision_trigger])
+
+    vision_detector = str(settings.mill_vision_detector).strip()
+    if vision_detector not in {"hough", "classifier"}:
+        raise ValueError("Vision-Detektor muss 'hough' oder 'classifier' sein")
+    cmd.extend(["--vision-detector", vision_detector])
+    vision_classifier_model = str(settings.mill_vision_classifier_model).strip()
+    if vision_classifier_model:
+        cmd.extend(["--vision-classifier-model", vision_classifier_model])
 
     uarm_port = str(settings.mill_uarm_port).strip()
     if uarm_port:

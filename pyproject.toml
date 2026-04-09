@@ -18,8 +18,18 @@ dependencies = [
 ml = [
     "torch>=2.5",
 ]
+vision-ml = [
+    "torch>=2.5",
+    "torchvision>=0.17",
+]
 ui = [
     "PySide6>=6.6",
+]
+speech = [
+    "RealtimeSTT>=0.3",
+    "pyaudio>=0.2",
+    "rapidfuzz>=3.0",
+    "spacy>=3.0",
 ]
 
 [project.scripts]
@@ -33,6 +43,8 @@ gra-mill-watchdog = "gaming_robot_arm.games.mill.cli.train_watchdog:main"
 gra-mill-selfplay-loop = "gaming_robot_arm.games.mill.cli.selfplay_loop:main"
 gra-mill-inspect-checkpoint = "gaming_robot_arm.games.mill.cli.inspect_checkpoint:main"
 gra-mill-evolve = "gaming_robot_arm.games.mill.cli.evolve_population:main"
+gra-collect-classifier-data = "gaming_robot_arm.vision.training.collect_data:main"
+gra-train-classifier = "gaming_robot_arm.vision.training.train_classifier:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

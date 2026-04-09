@@ -16,7 +16,7 @@ from gaming_robot_arm.games.mill.core.session import MillMoveProvider
 
 
 GAME_MODES = ("human-vs-human", "human-vs-ai", "ai-vs-ai")
-HUMAN_INPUT_MODES = ("manual", "vision")
+HUMAN_INPUT_MODES = ("manual", "vision", "voice")
 AI_BACKENDS = ("heuristic", "alphabeta", "neural")
 UARM_CONTROLLED_PLAYERS = ("none", "white", "black", "both", "legacy")
 
