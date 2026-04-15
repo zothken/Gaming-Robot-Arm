@@ -27,7 +27,7 @@ BOARD_LINE_PARAMS = {
     "hough_thresh": 120,
     "min_len_pct": 2,  # Prozent von max(H, W)
     "max_gap": 2,
-    "angle_tol": 5,
+    "angle_tol": 7,
     "bw_block": 19,
     "bw_C": 10,
     "bw_open": 2,
