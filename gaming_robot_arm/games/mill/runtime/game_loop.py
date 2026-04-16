@@ -42,9 +42,11 @@ from .robot_bridge import (
     load_robot_board_positions,
 )
 from .vision_bridge import (
+    AUTO_BASELINE_TIMEOUT_S,
     MillVisionBridge,
     VisionTriggerMode,
     _LiveVisionSession,
+    _VisionPreviewSession,
     infer_moves_from_observation,
 )
 from .voice_bridge import VoiceBridge
@@ -180,6 +182,13 @@ def add_mill_cli_arguments(parser: argparse.ArgumentParser) -> None:
         help="Aktiviert ausfuehrliches Logging der Vision-Zuordnung.",
     )
     other_group.add_argument(
+        "--vision-preview",
+        dest="mill_vision_preview",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Zeigt ein separates Fenster mit Live-Kamera und Figuren-Detektor-Overlay waehrend der Partie.",
+    )
+    other_group.add_argument(
         "--vision-trigger",
         dest="mill_vision_trigger",
         choices=("manual", "auto"),
@@ -187,18 +196,11 @@ def add_mill_cli_arguments(parser: argparse.ArgumentParser) -> None:
         help="Ausloeser fuer Vision-Zuege: manueller Scan per Enter oder automatischer Trigger auf Brettaenderung.",
     )
     other_group.add_argument(
-        "--vision-detector",
-        dest="mill_vision_detector",
-        choices=("hough", "classifier"),
-        default="hough",
-        help="Figuren-Erkennung: klassisches HoughCircles oder KI-Classifier.",
-    )
-    other_group.add_argument(
-        "--vision-classifier-model",
-        dest="mill_vision_classifier_model",
-        type=str,
-        default="",
-        help="Pfad zum Classifier-Modell (nur bei --vision-detector classifier).",
+        "--baseline-timeout-disabled",
+        dest="mill_baseline_timeout_disabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Deaktiviert den Baseline-Timeout beim Warten auf ein ruhiges Brett.",
     )
 
     other_group.add_argument(
@@ -436,22 +438,28 @@ def _choose_human_move(
     voice_bridge: VoiceBridge | None = None,
     vision_session: RecordingSession | _LiveVisionSession | None = None,
     vision_trigger: VisionTriggerMode = "auto",
+    baseline_timeout_disabled: bool = False,
 ) -> Move:
     legal_moves = list(session.legal_moves())
     if not legal_moves:
         raise RuntimeError("Keine legalen Zuege fuer den menschlichen Zug verfuegbar.")
 
     if controller.input_mode == "voice" and voice_bridge is not None:
-        return voice_bridge.listen_for_move(legal_moves)
+        move = voice_bridge.listen_for_move(legal_moves)
+        if move is not None:
+            return move
+        print("Spracherkennung abgelaufen, wechsle auf manuelle Eingabe.")
 
     if controller.input_mode == "vision" and vision_bridge is not None:
         if vision_trigger == "auto":
+            baseline_timeout_s = float("inf") if baseline_timeout_disabled else AUTO_BASELINE_TIMEOUT_S
             result = vision_bridge.observe_move_automatically(
                 rules=session.rules,
                 state=session.state,
                 legal_moves=legal_moves,
                 session=vision_session,
                 status_callback=print,
+                baseline_timeout_s=baseline_timeout_s,
             )
             if result.move is not None:
                 logger.info("Vision hat Zug erkannt: %s", _format_move(result.move))
@@ -522,8 +530,6 @@ def run_mill_game(args: argparse.Namespace) -> int:
             attempts=args.mill_vision_attempts,
             debug_assignments=args.mill_debug_vision,
             camera_index=args.camera_index,
-            detector_backend=args.mill_vision_detector,
-            classifier_model_path=args.mill_vision_classifier_model,
         )
         logger.info("Vision-Bridge fuer menschliche Zug-Inferenz aktiviert.")
 
@@ -593,31 +599,23 @@ def run_mill_game(args: argparse.Namespace) -> int:
                 try:
                     vision_bridge.calibrate_temporary_board_pixels(
                         session=vision_session,
-                        attempts=1,
+                        attempts=5,
                     )
                 except Exception as exc:
-                    logger.warning(
-                        "Temporare Live-Brettkalibrierung fehlgeschlagen (%s). Versuche gespeicherte Kalibrierung.",
-                        exc,
-                    )
-                    try:
-                        fallback_bridge = MillVisionBridge.from_calibration(
-                            attempts=args.mill_vision_attempts,
-                            debug_assignments=args.mill_debug_vision,
-                            camera_index=args.camera_index,
-                            detector_backend=args.mill_vision_detector,
-                            classifier_model_path=args.mill_vision_classifier_model,
-                        )
-                        vision_bridge.board_pixels = fallback_bridge.board_pixels
-                        vision_bridge.labels_order = fallback_bridge.labels_order
-                        vision_bridge.board_source = "calibration"
-                        logger.warning("Nutze gespeicherte Brettkalibrierung als Fallback fuer diese Partie.")
-                    except Exception as fallback_exc:
-                        logger.warning(
-                            "Keine Brettkalibrierung verfuegbar (%s); verwende manuelle Eingabe.",
-                            fallback_exc,
-                        )
-                        vision_bridge = None
+                    raise RuntimeError(
+                        f"Live-Brettkalibrierung fehlgeschlagen – Brett sichtbar und gut beleuchtet? ({exc})"
+                    ) from exc
+
+            if (
+                physical_board_mode
+                and vision_bridge is not None
+                and vision_session is not None
+                and bool(getattr(args, "mill_vision_preview", False))
+            ):
+                preview_session = _VisionPreviewSession(vision_session, vision_bridge)
+                stack.callback(preview_session.close)
+                vision_session = preview_session
+                logger.info("Vision-Preview-Fenster aktiviert.")
 
             while (args.mill_max_plies == 0 or len(session.move_history) < args.mill_max_plies) and not session.is_terminal():
                 _print_turn_header(session)
@@ -636,6 +634,7 @@ def run_mill_game(args: argparse.Namespace) -> int:
                         voice_bridge=voice_bridge,
                         vision_session=vision_session,
                         vision_trigger=args.mill_vision_trigger,
+                        baseline_timeout_disabled=bool(args.mill_baseline_timeout_disabled),
                     )
                     print(f"{controller.label} waehlt {_format_move(move)}")
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol, Sequence
+from typing import Generic, Optional, Protocol, Sequence, TypeVar
 
 Player = str
 
@@ -24,15 +24,18 @@ class GameState(Protocol):
     to_move: Player
 
 
-class Rules(Protocol):
+_S = TypeVar("_S", bound=GameState)
+
+
+class Rules(Protocol[_S]):
     """Minimaler Regelvertrag fuer rundenbasierte Spiele."""
 
-    def initial_state(self) -> GameState: ...
+    def initial_state(self) -> _S: ...
 
-    def legal_moves(self, state: GameState) -> Sequence[Move]: ...
+    def legal_moves(self, state: _S) -> Sequence[Move]: ...
 
-    def apply_move(self, state: GameState, move: Move) -> GameState: ...
+    def apply_move(self, state: _S, move: Move) -> _S: ...
 
-    def is_terminal(self, state: GameState) -> bool: ...
+    def is_terminal(self, state: _S) -> bool: ...
 
-    def winner(self, state: GameState) -> Optional[Player]: ...
+    def winner(self, state: _S) -> Optional[Player]: ...

@@ -42,7 +42,7 @@ def removable_positions(board: Dict[str, Optional[Player]], player: Player) -> L
 def state_signature(state: MillState) -> str:
     """Kompakte, deterministische Signatur fuer Dreifachwiederholungs-Pruefungen."""
 
-    board_key = "".join(state.board[label] if state.board[label] is not None else "." for label in BOARD_LABELS)
+    board_key = "".join(state.board[label] or "." for label in BOARD_LABELS)
     placed_key = ":".join(str(state.placed.get(player, 0)) for player in PLAYERS)
     return f"{board_key}|{state.to_move}|{placed_key}"
 

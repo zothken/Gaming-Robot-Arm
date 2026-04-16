@@ -6,9 +6,12 @@ import argparse
 from dataclasses import dataclass
 import importlib
 import inspect
+import json
+from pathlib import Path
 import time
-from typing import Any, Sequence
+from typing import Any, IO, Sequence
 
+from gaming_robot_arm.games.common.interfaces import Move
 from gaming_robot_arm.games.mill import (
     AlphaBetaMillAI,
     HeuristicMillAI,
@@ -17,6 +20,8 @@ from gaming_robot_arm.games.mill import (
     MillRuleSettings,
     MillRules,
 )
+from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
+from gaming_robot_arm.games.mill.core.state import MillState
 
 
 AI_REGISTRY: dict[str, type[Any]] = {
@@ -51,6 +56,26 @@ class GameResult:
     draw_reason: str | None
     plies: int
     duration_seconds: float
+    draw_trace: dict[str, Any] | None = None
+
+
+def serialize_state(state: MillState) -> dict[str, Any]:
+    return {
+        "to_move": state.to_move,
+        "board": {position: state.board.get(position) for position in BOARD_LABELS},
+        "placed": {"W": state.placed.get("W", 0), "B": state.placed.get("B", 0)},
+        "plies_without_capture": state.plies_without_capture,
+        "position_signature": state.position_history[-1] if state.position_history else None,
+    }
+
+
+def serialize_move(move: Move) -> dict[str, Any]:
+    return {
+        "player": move.player,
+        "src": move.src,
+        "dst": move.dst,
+        "capture": move.capture,
+    }
 
 
 def parse_scalar(raw: str) -> Any:
@@ -161,15 +186,24 @@ def play_game(
     black_ai: Any,
     rules: MillRules,
     max_plies: int,
+    collect_draw_trace: bool,
 ) -> GameResult:
     session = MillGameSession(rules=rules)
     start = time.perf_counter()
     draw_reason: str | None = None
+    state_trace: list[dict[str, Any]] = []
+    move_trace: list[dict[str, Any]] = []
+
+    if collect_draw_trace:
+        state_trace.append(serialize_state(session.state))
 
     while len(session.move_history) < max_plies and not session.is_terminal():
         provider = white_ai if session.state.to_move == "W" else black_ai
         move = session.choose_ai_move(provider)
         session.apply_move(move)
+        if collect_draw_trace:
+            move_trace.append(serialize_move(move))
+            state_trace.append(serialize_state(session.state))
 
     duration_seconds = time.perf_counter() - start
     winner_color = session.winner() if session.is_terminal() else None
@@ -189,6 +223,19 @@ def play_game(
         winner_key = black_key
         winner_name = black_name
 
+    draw_trace: dict[str, Any] | None = None
+    if winner_key is None and collect_draw_trace:
+        draw_trace = {
+            "game_index": index,
+            "white": {"key": white_key, "name": white_name},
+            "black": {"key": black_key, "name": black_name},
+            "draw_reason": draw_reason,
+            "plies": len(session.move_history),
+            "duration_seconds": duration_seconds,
+            "moves": move_trace,
+            "states": state_trace,
+        }
+
     return GameResult(
         index=index,
         white_key=white_key,
@@ -200,6 +247,7 @@ def play_game(
         draw_reason=draw_reason,
         plies=len(session.move_history),
         duration_seconds=duration_seconds,
+        draw_trace=draw_trace,
     )
 
 
@@ -270,6 +318,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=200,
         help="Halbzuglimit ohne Schlag, wenn --enable-no-capture-draw aktiv ist.",
     )
+    parser.add_argument(
+        "--save-draw-traces",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Speichert bei Remis die komplette Halbzug- und Zustandsfolge als JSONL.",
+    )
+    parser.add_argument(
+        "--draw-trace-dir",
+        type=str,
+        default="data/benchmark",
+        help="Ausgabeordner fuer Draw-Trace-Dateien.",
+    )
     return parser
 
 
@@ -302,6 +362,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--no-capture-draw-plies muss > 0 sein")
     if args.depth is not None and args.depth <= 0:
         raise ValueError("--depth muss > 0 sein, wenn gesetzt")
+    if args.save_draw_traces and not args.draw_trace_dir.strip():
+        raise ValueError("--draw-trace-dir darf nicht leer sein, wenn --save-draw-traces aktiv ist")
 
 
 def main() -> None:
@@ -338,43 +400,65 @@ def main() -> None:
     rules = MillRules(settings=rule_settings)
 
     results: list[GameResult] = []
-    for game_index in range(1, args.games + 1):
-        a_is_white = (game_index % 2 == 1) if args.alternate_colors else True
-        white_participant = participant_a if a_is_white else participant_b
-        black_participant = participant_b if a_is_white else participant_a
+    draw_trace_path: Path | None = None
+    draw_trace_handle: IO[str] | None = None
+    draw_traces_written = 0
 
-        white_ai = instantiate_ai(
-            white_participant,
-            game_index=game_index,
-            deterministic=args.deterministic,
-            default_alphabeta_depth=args.depth,
-        )
-        black_ai = instantiate_ai(
-            black_participant,
-            game_index=game_index,
-            deterministic=args.deterministic,
-            default_alphabeta_depth=args.depth,
-        )
+    if args.save_draw_traces:
+        trace_dir = Path(args.draw_trace_dir)
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        draw_trace_path = trace_dir / f"mill_benchmark_draws_{timestamp}.jsonl"
+        draw_trace_handle = draw_trace_path.open("w", encoding="utf-8")
+        print(f"Draw-Trace-Ausgabe aktiv: {draw_trace_path}")
 
-        result = play_game(
-            index=game_index,
-            white_key=white_participant.key,
-            black_key=black_participant.key,
-            white_name=white_participant.label,
-            black_name=black_participant.label,
-            white_ai=white_ai,
-            black_ai=black_ai,
-            rules=rules,
-            max_plies=args.max_plies,
-        )
-        results.append(result)
+    try:
+        for game_index in range(1, args.games + 1):
+            a_is_white = (game_index % 2 == 1) if args.alternate_colors else True
+            white_participant = participant_a if a_is_white else participant_b
+            black_participant = participant_b if a_is_white else participant_a
 
-        outcome = result.winner_name or f"Remis ({result.draw_reason})"
-        print(
-            f"Partie {result.index:02d}: "
-            f"{result.white_name} (W) gegen {result.black_name} (B) "
-            f"-> {outcome}; halbzuege={result.plies}; zeit={result.duration_seconds:.2f}s"
-        )
+            white_ai = instantiate_ai(
+                white_participant,
+                game_index=game_index,
+                deterministic=args.deterministic,
+                default_alphabeta_depth=args.depth,
+            )
+            black_ai = instantiate_ai(
+                black_participant,
+                game_index=game_index,
+                deterministic=args.deterministic,
+                default_alphabeta_depth=args.depth,
+            )
+
+            result = play_game(
+                index=game_index,
+                white_key=white_participant.key,
+                black_key=black_participant.key,
+                white_name=white_participant.label,
+                black_name=black_participant.label,
+                white_ai=white_ai,
+                black_ai=black_ai,
+                rules=rules,
+                max_plies=args.max_plies,
+                collect_draw_trace=args.save_draw_traces,
+            )
+            results.append(result)
+
+            if draw_trace_handle is not None and result.draw_trace is not None:
+                draw_trace_handle.write(json.dumps(result.draw_trace, ensure_ascii=False) + "\n")
+                draw_trace_handle.flush()
+                draw_traces_written += 1
+
+            outcome = result.winner_name or f"Remis ({result.draw_reason})"
+            print(
+                f"Partie {result.index:02d}: "
+                f"{result.white_name} (W) gegen {result.black_name} (B) "
+                f"-> {outcome}; halbzuege={result.plies}; zeit={result.duration_seconds:.2f}s"
+            )
+    finally:
+        if draw_trace_handle is not None:
+            draw_trace_handle.close()
 
     wins_by_key = {
         participant_a.key: sum(1 for result in results if result.winner_key == participant_a.key),
@@ -392,6 +476,10 @@ def main() -> None:
     print(f"  Remis: {draws}")
     print(f"  Ø Halbzuege/Partie: {total_plies / len(results):.1f}")
     print(f"  Ø Zeit/Partie: {total_time / len(results):.2f}s")
+    if args.save_draw_traces:
+        print(f"  Draw-Traces geschrieben: {draw_traces_written}")
+        if draw_trace_path is not None:
+            print(f"  Draw-Trace-Datei: {draw_trace_path}")
 
 
 if __name__ == "__main__":

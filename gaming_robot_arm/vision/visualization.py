@@ -1,8 +1,4 @@
 import cv2
-import numpy as np
-
-from gaming_robot_arm.old.tracker import CentroidTracker
-
 
 # Zeigt mehrere Bilder gleichzeitig in separaten Fenstern an.
 def show_frames(frames_dict):
@@ -16,7 +12,8 @@ def draw_detections(frame, circles, colors, black_count, white_count):
         return frame
 
     for ((x, y, r), color) in zip(circles, colors):
-        cv2.circle(frame, (x, y), r, (255, 0, 0), 2)
+        circle_color = (255, 0, 0) if color in {"weiss", "white"} else (144, 238, 144)
+        cv2.circle(frame, (x, y), r, circle_color, 2)
         cv2.circle(frame, (x, y), 2, (0, 0, 255), 3)
 
         # # Kreise mit Farbtext beschriften
@@ -59,26 +56,3 @@ def draw_assignment_labels(frame, assignments, *, font_scale: float = 0.6) -> No
             2,
             cv2.LINE_AA,
         )
-
-
-def draw_ids(frame, tracker: CentroidTracker, trail: int = 5):
-    for (objectID, (centroid, color)) in tracker.objects.items():
-        position_history = tracker.positions.get(objectID, [])
-        if position_history:
-            recent = position_history[-trail:] if trail > 0 else position_history
-            smoothed = np.mean(recent, axis=0)
-        else:
-            smoothed = np.asarray(centroid, dtype=float)
-
-        smoothed = smoothed.astype(int)
-
-        cv2.putText(
-            frame,
-            f"ID {objectID}",
-            (smoothed[0] - 10, smoothed[1] - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 0),
-            2,
-        )
-        cv2.circle(frame, tuple(smoothed), 4, (255, 255, 0), -1)

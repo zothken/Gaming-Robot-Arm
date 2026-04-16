@@ -2,6 +2,8 @@ from RealtimeSTT import AudioToTextRecorder
 import pyaudio
 import numpy as np
 
+from .mill_commands import MillCommands
+
 class AudioProcess:
     RATE=48000
     CHUNK = 480
@@ -10,21 +12,24 @@ class AudioProcess:
 
 
 
-
-
-    # Primed Whisper auf deutsche Mühlenvokabular (A/B/C + Zahlen als Brettsymbole)
-    _INITIAL_PROMPT = (
-        "Mühle Brettspiel. Positionen: A1, A2, A3, A4, A5, A6, A7, A8, "
-        "B1, B2, B3, B4, B5, B6, B7, B8, C1, C2, C3, C4, C5, C6, C7, C8. "
-        "Befehle: nach, von, setze, schlage."
-    )
+    # Priming-Prompt wird aus MillCommands generiert (single source of truth)
+    _INITIAL_PROMPT = MillCommands().build_initial_prompt()
 
     def __init__(self, cmd_q, model: str = "tiny"):
         self.cmd_q = cmd_q
+        # compute_type muss zum device passen: CUDA-Builds unterstützen int8 nicht
+        # zuverlaessig -> int8_float16. Fuer CPU bleibt int8 die richtige Wahl.
+        import torch  # lokaler Import, damit Module-Import billig bleibt
+        if torch.cuda.is_available():
+            device = "cuda"
+            compute_type = "int8_float16"
+        else:
+            device = "cpu"
+            compute_type = "int8"
         self.recorder = AudioToTextRecorder(
             language="de",              # Sprache
-            compute_type="int8",
-            device = "cuda",        # cuda für Nutzung der Grafikkarte
+            compute_type=compute_type,
+            device=device,
             model = model,              # Großes Model, langsamer aber besser
             use_microphone=True,     # Disable built-in microphone usage
             spinner=False,           # eigene Statusmeldungen stattdessen

@@ -20,12 +20,18 @@ class CommandProcess:
             # Und vergleich mit lemmata
         highestScore, highestMatch = 0, None
         for word in full_sentence.split():
-            match, score, _ = process.extractOne(word, self.keys, scorer=fuzz.ratio)
+            result = process.extractOne(word, self.keys, scorer=fuzz.ratio)
+            if result is None:
+                continue
+            match, score, _ = result
             if score > highestScore:
                 highestScore = score
                 highestMatch = match
         for lem in lemmata:
-            match_lem, score_lem, _ = process.extractOne(lem, self.keys, scorer=fuzz.ratio)
+            result_lem = process.extractOne(lem, self.keys, scorer=fuzz.ratio)
+            if result_lem is None:
+                continue
+            match_lem, score_lem, _ = result_lem
             if score_lem > highestScore:
                 highestScore = score_lem
                 highestMatch = match_lem
@@ -41,11 +47,17 @@ class CommandProcess:
         lemmata = [token.lemma_ for token in doc]
         found = []
         for word in full_sentence.split():
-            match, score, _ = process.extractOne(word, self.keys, scorer=fuzz.ratio)
+            result = process.extractOne(word, self.keys, scorer=fuzz.ratio)
+            if result is None:
+                continue
+            match, score, _ = result
             if score > 70 and match not in found:
                 found.append(match)
         for lem in lemmata:
-            match, score, _ = process.extractOne(lem, self.keys, scorer=fuzz.ratio)
+            result = process.extractOne(lem, self.keys, scorer=fuzz.ratio)
+            if result is None:
+                continue
+            match, score, _ = result
             if score > 70 and match not in found:
                 found.append(match)
         return found if found else None

@@ -25,10 +25,6 @@ class CalibrationStore:
     base_dir: Path = CALIBRATION_DIR
 
     @property
-    def board_pixels_path(self) -> Path:
-        return self.base_dir / "board_pixels.json"
-
-    @property
     def cam_to_robot_path(self) -> Path:
         return self.base_dir / "cam_to_robot_homography.json"
 
@@ -80,11 +76,17 @@ def capture_board_pixels(camera_index: int = CAMERA_INDEX) -> Dict[str, Tuple[in
                 continue
 
             labeled = _label_positions(positions)
-            payload = {
-                "method": "board_pixels",
-                "labels_used": BOARD_LABELS,
-                "board_pixels": labeled,
-            }
+            existing: dict = {}
+            if STORE.cam_to_robot_path.exists():
+                try:
+                    existing = _load_json(STORE.cam_to_robot_path)
+                except Exception:
+                    pass
+            payload = dict(existing)
+            payload["labels_used"] = list(BOARD_LABELS)
+            payload["board_pixels"] = labeled
+            if "H" not in existing:
+                payload["method"] = "board_pixels"
             STORE.cam_to_robot_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             logger.info("Brett-Pixel gespeichert unter %s.", STORE.cam_to_robot_path)
             cv2.destroyAllWindows()
@@ -94,119 +96,15 @@ def capture_board_pixels(camera_index: int = CAMERA_INDEX) -> Dict[str, Tuple[in
     raise RuntimeError("Konnte keine gültigen Brett-Pixel erfassen.")
 
 
-def _pixels_fit_score(
-    board_pixels: Dict[str, Tuple[int, int]],
-    *,
-    frame_width: int,
-    frame_height: int,
-) -> float:
-    """Heuristischer Score, wie gut board_pixels zu einer Frame-Groesse passen."""
-    if not board_pixels or frame_width <= 0 or frame_height <= 0:
-        return float("-inf")
-
-    xs = [p[0] for p in board_pixels.values()]
-    ys = [p[1] for p in board_pixels.values()]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-
-    inside = 0
-    for x, y in board_pixels.values():
-        if 0 <= x < frame_width and 0 <= y < frame_height:
-            inside += 1
-    inside_ratio = inside / max(1, len(board_pixels))
-
-    # Overshoot relativ zur Frame-Groesse: je mehr ausserhalb, desto schlechter.
-    overshoot = 0.0
-    if min_x < 0:
-        overshoot += abs(min_x) / frame_width
-    if min_y < 0:
-        overshoot += abs(min_y) / frame_height
-    if max_x >= frame_width:
-        overshoot += (max_x - (frame_width - 1)) / frame_width
-    if max_y >= frame_height:
-        overshoot += (max_y - (frame_height - 1)) / frame_height
-
-    return float(inside_ratio - 0.5 * overshoot)
-
-
-def _pixels_inside_ratio(
-    board_pixels: Dict[str, Tuple[int, int]],
-    *,
-    frame_width: int,
-    frame_height: int,
-) -> float:
-    if not board_pixels or frame_width <= 0 or frame_height <= 0:
-        return 0.0
-    inside = 0
-    for x, y in board_pixels.values():
-        if 0 <= x < frame_width and 0 <= y < frame_height:
-            inside += 1
-    return inside / max(1, len(board_pixels))
-
-
-def load_board_pixels(
-    *,
-    frame_size: Tuple[int, int] | None = None,
-) -> Dict[str, Tuple[int, int]]:
-    """
-    Laedt Brett-Pixel (A1–C8).
-
-    Standardverhalten (frame_size=None): bevorzugt cam_to_robot_homography.json (falls vorhanden),
-    sonst board_pixels.json.
-
-    Wenn frame_size angegeben ist, wird die Quelle gewaehlt, deren board_pixels am besten in die
-    aktuelle Frame-Groesse passt (hilft bei wechselnden Kamera-Aufloesungen).
-    """
-    candidates: list[tuple[str, Dict[str, Tuple[int, int]]]] = []
-
-    if STORE.cam_to_robot_path.exists():
-        data = _load_json(STORE.cam_to_robot_path)
-        board_pixels = data.get("board_pixels", {})
-        if board_pixels:
-            candidates.append(
-                (str(STORE.cam_to_robot_path.name), {k: tuple(v) for k, v in board_pixels.items()})
-            )
-
-    if STORE.board_pixels_path.exists():
-        data = _load_json(STORE.board_pixels_path)
-        if data:
-            candidates.append((str(STORE.board_pixels_path.name), {k: tuple(v) for k, v in data.items()}))
-
-    if not candidates:
-        raise FileNotFoundError("Keine Brett-Pixel gefunden (cam_to_robot_homography.json/board_pixels.json).")
-
-    if frame_size is None or len(candidates) == 1:
-        # Rueckwaertskompatibel: zuerst Homography-Datei, sonst board_pixels.json.
-        return candidates[0][1]
-
-    frame_width, frame_height = frame_size
-    default_name, default_pixels = candidates[0]
-    # Konservativ: wenn die Standardquelle groesstenteils in den Frame passt, verwende sie weiter.
-    if _pixels_inside_ratio(default_pixels, frame_width=frame_width, frame_height=frame_height) >= 0.8:
-        return default_pixels
-
-    scored = [
-        (
-            _pixels_fit_score(pixels, frame_width=frame_width, frame_height=frame_height),
-            name,
-            pixels,
-        )
-        for name, pixels in candidates
-    ]
-    scored.sort(key=lambda t: t[0], reverse=True)
-    best_score, best_name, best_pixels = scored[0]
-
-    # Transparenz: warnen, wenn die "Standardquelle" nicht passt.
-    if best_name != candidates[0][0]:
-        logger.warning(
-            "Brett-Pixel aus %s gewaehlt (bessere Passung fuer Frame %sx%s; score=%.3f).",
-            best_name,
-            frame_width,
-            frame_height,
-            best_score,
-        )
-
-    return best_pixels
+def load_board_pixels() -> Dict[str, Tuple[int, int]]:
+    """Laedt Brett-Pixel (A1–C8) aus cam_to_robot_homography.json."""
+    if not STORE.cam_to_robot_path.exists():
+        raise FileNotFoundError("Keine Brett-Pixel gefunden (cam_to_robot_homography.json fehlt).")
+    data = _load_json(STORE.cam_to_robot_path)
+    board_pixels = data.get("board_pixels", {})
+    if not board_pixels:
+        raise FileNotFoundError("cam_to_robot_homography.json enthaelt keine Brett-Pixel.")
+    return {k: tuple(v) for k, v in board_pixels.items()}
 
 
 def calibrate_homography() -> None:
@@ -265,6 +163,60 @@ def calibrate_homography() -> None:
     }
     STORE.cam_to_robot_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.info("Homography gespeichert unter %s.", STORE.cam_to_robot_path)
+
+
+def detect_live_board_pixels(
+    session,
+    attempts: int = 6,
+) -> Dict[str, Tuple[float, float]]:
+    """Detect board pixel positions from live camera frames.
+
+    Tries up to `attempts` frames. Returns a dict mapping BOARD_LABELS
+    to (x, y) float pixel coords on success.
+    Raises RuntimeError if no attempt yields all 24 positions.
+
+    `session` must expose a `.read()` method returning an np.ndarray frame.
+    """
+    from gaming_robot_arm.vision.mill_board_detector import detect_board_positions as _detect
+
+    max_attempts = max(1, int(attempts))
+    for attempt_idx in range(max_attempts):
+        try:
+            frame = session.read()
+        except Exception as exc:
+            logger.warning(
+                "Konnte keinen Kameraframe lesen (Versuch %s/%s): %s",
+                attempt_idx + 1,
+                max_attempts,
+                exc,
+            )
+            continue
+        try:
+            positions, _annotated = _detect(frame, debug=False, return_bw=False)
+        except Exception:
+            logger.exception(
+                "Brett-Detektor fehlgeschlagen (Versuch %s/%s).",
+                attempt_idx + 1,
+                max_attempts,
+            )
+            continue
+        if len(positions) != len(BOARD_LABELS):
+            logger.debug(
+                "Live-Brettkalibrierung: %s/%s Positionen (Versuch %s/%s).",
+                len(positions),
+                len(BOARD_LABELS),
+                attempt_idx + 1,
+                max_attempts,
+            )
+            continue
+        board_pixels = {
+            label: (float(x), float(y))
+            for label, (x, y) in zip(BOARD_LABELS, positions)
+        }
+        logger.info("Live-Brettkalibrierung erfolgreich (%s Positionen).", len(board_pixels))
+        return board_pixels
+
+    raise RuntimeError("Live-Brettkalibrierung fehlgeschlagen.")
 
 
 def main() -> None:

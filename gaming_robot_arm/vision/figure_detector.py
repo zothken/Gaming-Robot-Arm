@@ -1,11 +1,14 @@
 from collections import Counter, deque
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any, List, Literal, Mapping, Protocol, Sequence, Tuple, TypedDict, overload
 
 import cv2
 import numpy as np
 
 from gaming_robot_arm.config import CAMERA_INDEX, FRAME_RATE
+from gaming_robot_arm.games.common.interfaces import Player
+from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
 from gaming_robot_arm.utils.logger import logger
 from gaming_robot_arm.vision.detector_config import (
     load_figure_params,
@@ -92,6 +95,18 @@ class FigureDetectionSession(Protocol):
     def write(self, frame: np.ndarray) -> None: ...
 
 
+@dataclass(slots=True)
+class BoardAssignmentObservation:
+    """Zwischenergebnis einer fortlaufenden Brettbeobachtung."""
+
+    stable_board: dict[str, Player | None]
+    stable_assignments: list["Assignment"]
+    raw_assignments: list["Assignment"]
+    frames_seen: int
+    board_source: str
+    ready: bool
+
+
 def estimate_assign_distance(
     board_coords: Mapping[str, tuple[float, float]],
     *,
@@ -161,19 +176,11 @@ def _coord_shift_median_px(
 
 
 def _distance_steps(base_dist: float) -> list[float]:
-    return [
-        base_dist,
-        base_dist * 1.1,
-        base_dist * 1.2,
-        base_dist * 1.3,
-        base_dist * 1.5,
-        base_dist * 1.8,
-    ]
+    return [base_dist]
 
 
 def _detect_live_board_coords(frame: np.ndarray) -> dict[str, tuple[float, float]] | None:
     try:
-        from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
         from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
     except Exception:
         logger.exception("Board-Detector konnte fuer Live-Brettkoordinaten nicht importiert werden.")
@@ -278,6 +285,195 @@ def _select_assignment_board_coords(
         logger.warning("Nutze Live-Brettpunkte fuer Figuren-Zuordnung (auto).")
         return live_coords, live_labels, "live"
     return cal_coords, cal_labels, "calibration"
+
+
+def _empty_player_board() -> dict[str, Player | None]:
+    return {label: None for label in BOARD_LABELS}
+
+
+def _assignments_to_player_board(assignments: Sequence["Assignment"]) -> dict[str, Player | None]:
+    board = _empty_player_board()
+    for item in assignments:
+        label = str(item.get("label", "")).upper()
+        if label not in board:
+            continue
+        color = str(item.get("color", "")).lower()
+        if color in {"weiss", "white"}:
+            board[label] = "W"
+        elif color in {"schwarz", "black"}:
+            board[label] = "B"
+    return board
+
+
+
+def hough_detect_assignments(
+    frame: np.ndarray,
+    board_coords: Mapping[str, tuple[float, float]],
+    max_assign_dist: float,
+    labels_order: Sequence[str],
+    debug_assignments: bool = False,
+) -> list[Assignment]:
+    """Wrapper um *detect_figures* mit dem gleichen Callable-Interface wie alternative Detektoren."""
+    _, _, _, _, assignments = detect_figures(
+        frame,
+        board_coords=board_coords,
+        max_assign_dist=max_assign_dist,
+        return_assignments=True,
+        labels_order=labels_order,
+        debug_assignments=debug_assignments,
+        draw_assignments=False,
+    )
+    return assignments
+
+
+class BoardAssignmentStream:
+    """Verarbeitet Videoframes fortlaufend zu stabilen Brettbeobachtungen."""
+
+    def __init__(
+        self,
+        board_pixels: Mapping[str, tuple[float, float]],
+        *,
+        labels_order: Sequence[str] | None = None,
+        board_source: BoardCoordSource = "live",
+        window_frames: int = 30,
+        min_ratio: float = 0.5,
+        min_samples: int | None = None,
+        debug_assignments: bool = False,
+        max_assign_dist: float | None = None,
+    ) -> None:
+        self._calibration_board_pixels = _with_assignment_offset(board_pixels) or {}
+        self._labels_hint = (
+            list(labels_order) if labels_order else sorted(self._calibration_board_pixels.keys())
+        )
+        self._board_source: BoardCoordSource = board_source
+        self._window_frames = max(1, int(window_frames))
+        self._min_ratio = float(min_ratio)
+        self._min_samples = self._window_frames if min_samples is None else max(1, int(min_samples))
+        self._debug_assignments = bool(debug_assignments)
+        self._max_assign_dist = (
+            float(max_assign_dist) if max_assign_dist is not None and float(max_assign_dist) > 0 else None
+        )
+
+        self._frames_seen = 0
+        self._frame_check_done = False
+        self._warned_missing_board = False
+        self._assignment_board_pixels: dict[str, tuple[float, float]] | None = None
+        self._labels_order: list[str] = list(self._labels_hint)
+        self._active_source = "calibration"
+        self._assign_dist = 0.0
+        self._dist_steps: list[float] = []
+        self._stabilizer: AssignmentStabilizer | None = None
+
+    def _ensure_board_setup(self, frame: np.ndarray) -> bool:
+        if self._frame_check_done:
+            return self._assignment_board_pixels is not None
+
+        board_coords, labels_order, active_source = _select_assignment_board_coords(
+            frame,
+            calibration_coords=self._calibration_board_pixels,
+            labels_order=self._labels_hint,
+            board_source=self._board_source,
+        )
+        if board_coords is None:
+            if not self._warned_missing_board:
+                logger.warning("Keine Brettkoordinaten fuer Figuren-Zuordnung verfuegbar.")
+                self._warned_missing_board = True
+            return False
+
+        self._assignment_board_pixels = board_coords
+        self._labels_order = labels_order
+        self._active_source = active_source
+        self._assign_dist = self._max_assign_dist or estimate_assign_distance(self._assignment_board_pixels)
+        self._dist_steps = [self._assign_dist] if self._max_assign_dist is not None else _distance_steps(self._assign_dist)
+        self._stabilizer = AssignmentStabilizer(self._labels_order, window=self._window_frames)
+
+        logger.info(
+            "Figuren-Zuordnung nutzt Brettquelle '%s' (basis_dist=%.1fpx).",
+            self._active_source,
+            self._assign_dist,
+        )
+
+        h, w = frame.shape[:2]
+        xs = [p[0] for p in self._assignment_board_pixels.values()]
+        ys = [p[1] for p in self._assignment_board_pixels.values()]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
+        inside_ratio = _inside_ratio(self._assignment_board_pixels, width=w, height=h)
+        if inside_ratio < 0.8:
+            logger.warning(
+                "Kalibrierung passt evtl. nicht zur Kamera-Aufloesung (%sx%s): inside_ratio=%.2f (bbox=%sx%s..%sx%s). "
+                "Kalibrierung ggf. bei gleicher Aufloesung wiederholen oder Kamera-Aufloesung angleichen.",
+                w,
+                h,
+                inside_ratio,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            )
+        else:
+            bbox_w = max_x - min_x
+            bbox_h = max_y - min_y
+            logger.debug(
+                "Board-Pixel im Frame: inside_ratio=%.2f, bbox=%.0fx%.0f (%.0f%% x %.0f%% vom Frame).",
+                inside_ratio,
+                bbox_w,
+                bbox_h,
+                100.0 * bbox_w / max(1.0, float(w)),
+                100.0 * bbox_h / max(1.0, float(h)),
+            )
+
+        self._frame_check_done = True
+        return True
+
+    def process_frame(self, frame: np.ndarray) -> BoardAssignmentObservation:
+        if not self._ensure_board_setup(frame):
+            return BoardAssignmentObservation(
+                stable_board=_empty_player_board(),
+                stable_assignments=[],
+                raw_assignments=[],
+                frames_seen=self._frames_seen,
+                board_source="none",
+                ready=False,
+            )
+
+        self._frames_seen += 1
+        dist = self._dist_steps[min(self._frames_seen - 1, len(self._dist_steps) - 1)]
+        raw_assignments: list[Assignment] = []
+
+        try:
+            _, _, _, _, raw_assignments = detect_figures(
+                frame,
+                board_coords=self._assignment_board_pixels,
+                max_assign_dist=dist,
+                return_assignments=True,
+                debug_assignments=self._debug_assignments,
+                labels_order=self._labels_order,
+                draw_assignments=False,
+            )
+        except Exception:
+            logger.exception("Fehler bei der Zuordnung der Figuren zum Brett.")
+
+        stable_assignments: list[Assignment] = []
+        if self._stabilizer is not None:
+            self._stabilizer.update(raw_assignments)
+            stable_assignments = self._stabilizer.stable_assignments(
+                min_ratio=self._min_ratio,
+                min_samples=self._min_samples,
+            )
+
+        ready = self._frames_seen >= self._min_samples
+        stable_board = _assignments_to_player_board(stable_assignments) if ready else _empty_player_board()
+
+        return BoardAssignmentObservation(
+            stable_board=stable_board,
+            stable_assignments=stable_assignments,
+            raw_assignments=raw_assignments,
+            frames_seen=self._frames_seen,
+            board_source=self._active_source,
+            ready=ready,
+        )
 
 
 def assign_figures_to_board(
@@ -511,9 +707,11 @@ def detect_figures(
             colors.append(color)
 
     if len(centroids) > 0:
-        sorted_data = sorted(zip(centroids, colors), key=lambda c: (c[0][0], c[0][1]))
-        centroids = [xy for xy, _ in sorted_data]
-        colors = [name for _, name in sorted_data]
+        sorted_idx = sorted(range(len(centroids)), key=lambda i: (centroids[i][0], centroids[i][1]))
+        centroids = [centroids[i] for i in sorted_idx]
+        colors = [colors[i] for i in sorted_idx]
+        if detected_circles is not None:
+            detected_circles = detected_circles[np.array(sorted_idx)]
 
     if tracker is not None:
         tracker.update(centroids, colors)
@@ -554,9 +752,6 @@ def detect_figures(
                     max_assign_dist if max_assign_dist is not None else float("nan"),
                 )
 
-        if draw_assignments and assignments:
-            draw_assignment_labels(frame, assignments, font_scale=0.6)
-
     if detected_circles is None or len(centroids) == 0:
         if return_assignments:
             return frame, gray, blurred, thresh, assignments
@@ -565,6 +760,9 @@ def detect_figures(
     draw_detections(frame, detected_circles, colors, black_count, white_count)
     # if tracker is not None:
     #     draw_ids(frame, tracker)
+
+    if draw_assignments and assignments:
+        draw_assignment_labels(frame, assignments, font_scale=0.6)
 
     if return_assignments:
         return frame, gray, blurred, thresh, assignments
@@ -584,11 +782,9 @@ def run_live_parameter_tuning(
     """
     params_win = "Figure Params"
     thresh_win = "Figure Threshold"
-    blur_win = "Figure Blurred"
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.namedWindow(thresh_win, cv2.WINDOW_NORMAL)
-    cv2.namedWindow(blur_win, cv2.WINDOW_NORMAL)
     cv2.namedWindow(params_win, cv2.WINDOW_NORMAL)
 
     def add_slider(name: str, init: int, maxval: int) -> None:
@@ -607,13 +803,37 @@ def run_live_parameter_tuning(
     add_slider("brightness_split", int(DEFAULT_FIGURE_PARAMS["brightness_split"]), 255)  # Schwarz/Weiss-Schwelle
     add_slider("save_config", 0, 1)  # Aktuelle Parameter in figure_detector.py speichern
 
+    board_coords: dict[str, tuple[float, float]] | None = None
+    assign_dist: float | None = None
+    labels_order: list[str] | None = None
+
+    calibration_loaded = False
+
     try:
         with open_camera(camera_index=camera_index) as cam:
+            print("Kamera geoeffnet, starte Loop...", flush=True)
             while True:
                 ret, frame = cam.read()
                 if not ret:
                     logger.warning("Kameraframe konnte nicht gelesen werden, breche ab.")
                     break
+
+                if not calibration_loaded:
+                    try:
+                        from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
+                        positions, _ = detect_board_positions(frame, debug=False)
+                        if len(positions) == len(BOARD_LABELS):
+                            detected = {lbl: (float(x), float(y)) for lbl, (x, y) in zip(BOARD_LABELS, positions)}
+                            board_coords = _with_assignment_offset(detected)
+                            assert board_coords is not None
+                            assign_dist = estimate_assign_distance(board_coords)
+                            labels_order = list(BOARD_LABELS)
+                            calibration_loaded = True
+                            logger.info("Live-Tuning: Brett live erkannt (%d Punkte).", len(board_coords))
+                        # else: retry next frame
+                    except Exception:
+                        calibration_loaded = True  # stop retrying on hard error
+                        logger.warning("Live-Tuning: Live-Brettdetektion fehlgeschlagen.", exc_info=True)
 
                 raw_params = {
                     "blur_ksize": cv2.getTrackbarPos("blur_ksize", params_win),
@@ -645,7 +865,17 @@ def run_live_parameter_tuning(
                         print("Figure-Parameter in figure_detector_config.json gespeichert.")
                     cv2.setTrackbarPos("save_config", params_win, 0)
 
-                processed, _, blurred, thresh = detect_figures(frame, params=live_params)
+                processed, _, blurred, thresh = detect_figures(
+                    frame,
+                    board_coords=board_coords,
+                    max_assign_dist=assign_dist,
+                    labels_order=labels_order,
+                    draw_assignments=bool(board_coords),
+                    params=live_params,
+                )
+                if board_coords is not None:
+                    for bx, by in board_coords.values():
+                        cv2.circle(processed, (int(bx), int(by)), 4, (0, 255, 255), -1)
 
                 overlay = (
                     f"blur={live_params['blur_ksize']} block={live_params['thresh_block']} "
@@ -667,7 +897,6 @@ def run_live_parameter_tuning(
 
                 cv2.imshow(window_name, processed)
                 cv2.imshow(thresh_win, thresh)
-                cv2.imshow(blur_win, blurred)
 
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
@@ -696,24 +925,10 @@ def run_live_assignment_test(
     - live: nutzt pro Startframe den Mill-Board-Detector.
     - auto: vergleicht beide Quellen und waehlt robust die passendere.
 
-    Erfordert bei board_source=calibration Brett-Pixel in
-    gaming_robot_arm/calibration/cam_to_robot_homography.json (Kalibrierung Option 1).
     Druecke 'q', um die Anzeige zu beenden. Gewertet werden nur Figuren, die in
     mindestens min_ratio der letzten Sekunde erkannt wurden (nutzt FRAME_RATE).
     Wenn use_stabilizer=False, werden die Roh-Zuordnungen je Frame gezeichnet.
     """
-    load_board_pixels = None
-    if board_source in {"calibration", "auto"}:
-        try:
-            from gaming_robot_arm.calibration.calibration import load_board_pixels as _load_board_pixels
-
-            load_board_pixels = _load_board_pixels
-        except Exception:
-            if board_source == "calibration":
-                logger.exception("Kalibrations-Modul konnte nicht importiert werden.")
-                return
-            logger.warning("Kalibrations-Modul nicht verfuegbar; verwende Live-Brettdetektion.")
-
     try:
         with open_camera(camera_index=camera_index) as cam:
             fps = get_effective_camera_fps(cam, configured_fps=FRAME_RATE)
@@ -721,32 +936,13 @@ def run_live_assignment_test(
             min_samples = window_frames if min_samples is None else max(1, int(min_samples))
 
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-            # Ersten Frame lesen, um die Aufloesung zu kennen (Kalibrierung kann auf anderer Aufloesung basiert haben).
             ret0, frame0 = cam.read()
             if not ret0:
                 logger.error("Kameraframe konnte nicht gelesen werden, breche ab.")
                 return
 
             calibration_coords: dict[str, tuple[float, float]] | None = None
-            if load_board_pixels is not None:
-                try:
-                    loaded = load_board_pixels(frame_size=(frame0.shape[1], frame0.shape[0]))
-                    calibration_coords = _with_assignment_offset(loaded)
-                except FileNotFoundError:
-                    if board_source == "calibration":
-                        logger.error(
-                            "Keine Brett-Pixel gefunden. Bitte `python -m gaming_robot_arm.calibration.calibration` "
-                            "ausfuehren (Option 1)."
-                        )
-                        return
-                    logger.warning("Keine gespeicherten Brett-Pixel gefunden; verwende Live-Brettdetektion.")
-                except Exception:
-                    if board_source == "calibration":
-                        logger.exception("Fehler beim Laden der Brett-Pixel.")
-                        return
-                    logger.warning("Fehler beim Laden gespeicherter Brett-Pixel; verwende Live-Brettdetektion.")
-
-            labels_hint = sorted(calibration_coords.keys()) if calibration_coords else None
+            labels_hint: list[str] | None = None
             board_coords, labels_order, active_source = _select_assignment_board_coords(
                 frame0,
                 calibration_coords=calibration_coords,
@@ -858,13 +1054,15 @@ def detect_board_assignments(
     - Ein Label zaehlt nur, wenn es in mindestens der Haelfte der betrachteten Frames
       innerhalb der letzten Sekunde erkannt wurde (FRAME_RATE bestimmt die Fensterlaenge).
     """
-    assignment_board_pixels = _with_assignment_offset(board_pixels) or {}
-    labels_order = list(labels_order) if labels_order else sorted(assignment_board_pixels.keys())
-    frames_seen = 0
-
-    base_dist = estimate_assign_distance(assignment_board_pixels)
-    dist_steps = _distance_steps(base_dist)
-    active_source = "calibration"
+    labels_order = list(labels_order) if labels_order else sorted(board_pixels.keys())
+    last_observation = BoardAssignmentObservation(
+        stable_board=_empty_player_board(),
+        stable_assignments=[],
+        raw_assignments=[],
+        frames_seen=0,
+        board_source="none",
+        ready=False,
+    )
 
     try:
         with (
@@ -872,9 +1070,16 @@ def detect_board_assignments(
         ) as cam:
             fps = get_effective_camera_fps(cam, configured_fps=FRAME_RATE)
             window_frames = max(1, int(round(fps)))
-            stabilizer = AssignmentStabilizer(labels_order, window=window_frames)
+            stream = BoardAssignmentStream(
+                board_pixels,
+                labels_order=labels_order,
+                board_source=board_source,
+                window_frames=window_frames,
+                min_samples=window_frames,
+                min_ratio=0.5,
+                debug_assignments=debug_assignments,
+            )
             frames_to_capture = max(window_frames, attempts)
-            frame_check_done = False
 
             for idx in range(frames_to_capture):
                 ret, frame = cam.read()
@@ -883,95 +1088,22 @@ def detect_board_assignments(
                     continue
                 if session is not None:
                     session.write(frame)
-
-                if not frame_check_done:
-                    selected_coords, selected_labels, selected_source = _select_assignment_board_coords(
-                        frame,
-                        calibration_coords=assignment_board_pixels,
-                        labels_order=labels_order,
-                        board_source=board_source,
-                    )
-                    if selected_coords is None:
-                        logger.warning("Keine Brettkoordinaten fuer Figuren-Zuordnung verfuegbar.")
-                        continue
-
-                    assignment_board_pixels = selected_coords
-                    labels_order = selected_labels
-                    active_source = selected_source
-                    base_dist = estimate_assign_distance(assignment_board_pixels)
-                    dist_steps = _distance_steps(base_dist)
-                    logger.info(
-                        "Figuren-Zuordnung nutzt Brettquelle '%s' (basis_dist=%.1fpx).",
-                        active_source,
-                        base_dist,
-                    )
-
-                    h, w = frame.shape[:2]
-                    xs = [p[0] for p in assignment_board_pixels.values()]
-                    ys = [p[1] for p in assignment_board_pixels.values()]
-                    min_x, max_x = min(xs), max(xs)
-                    min_y, max_y = min(ys), max(ys)
-
-                    inside_ratio = _inside_ratio(assignment_board_pixels, width=w, height=h)
-                    if inside_ratio < 0.8:
-                        logger.warning(
-                            "Kalibrierung passt evtl. nicht zur Kamera-Aufloesung (%sx%s): inside_ratio=%.2f (bbox=%sx%s..%sx%s). "
-                            "Kalibrierung ggf. bei gleicher Aufloesung wiederholen oder Kamera-Aufloesung angleichen.",
-                            w,
-                            h,
-                            inside_ratio,
-                            min_x,
-                            min_y,
-                            max_x,
-                            max_y,
-                        )
-                    else:
-                        bbox_w = max_x - min_x
-                        bbox_h = max_y - min_y
-                        logger.debug(
-                            "Board-Pixel im Frame: inside_ratio=%.2f, bbox=%.0fx%.0f (%.0f%% x %.0f%% vom Frame).",
-                            inside_ratio,
-                            bbox_w,
-                            bbox_h,
-                            100.0 * bbox_w / max(1.0, float(w)),
-                            100.0 * bbox_h / max(1.0, float(h)),
-                        )
-                    frame_check_done = True
-
-                frames_seen += 1
-                try:
-                    dist = dist_steps[idx] if idx < len(dist_steps) else dist_steps[-1]
-                    _, _, _, _, assignments = detect_figures(
-                        frame,
-                        board_coords=assignment_board_pixels,
-                        max_assign_dist=dist,
-                        return_assignments=True,
-                        debug_assignments=debug_assignments,
-                        labels_order=labels_order,
-                        draw_assignments=False,
-                    )
-                except Exception:
-                    logger.exception("Fehler bei der Zuordnung der Figuren zum Brett.")
-                    continue
-
-                stabilizer.update(assignments)
+                last_observation = stream.process_frame(frame)
 
     except RuntimeError as exc:
         logger.warning("Kamera konnte nicht geoeffnet werden: %s", exc)
         return []
 
-    if frames_seen < window_frames:
+    if not last_observation.ready:
         return []
-
-    stable = stabilizer.stable_assignments(min_ratio=0.5, min_samples=window_frames)
-    return stable
+    return last_observation.stable_assignments
 
 
 def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Live-Vorschau fuer Figuren-Detektion (optional mit Parametertuning).",
+        description="Live-Tuning fuer Figuren-Detektion; mit --assignments startet der Live-Test fuer Brettzuordnung.",
     )
     parser.add_argument(
         "--camera-index",
@@ -988,8 +1120,8 @@ def main() -> None:
     parser.add_argument(
         "--window-name",
         type=str,
-        default="Figuren-Detektor (A1-C8)",
-        help="Fenstertitel fuer die Live-Ansicht.",
+        default=None,
+        help="Fenstertitel fuer die Live-Ansicht (modusabhaengiger Standard, falls nicht gesetzt).",
     )
     parser.add_argument(
         "--raw",
@@ -1019,31 +1151,38 @@ def main() -> None:
         default="live",
         help="Quelle fuer Brettkoordinaten bei Figuren-Zuordnung.",
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--assignments",
+        action="store_true",
+        help="Startet den Live-Test mit Brettzuordnung statt des Default-Live-Tunings.",
+    )
+    mode_group.add_argument(
         "--tune",
         action="store_true",
-        help="Oeffnet Live-Trackbars zum Tunen der Figure-Detector-Parameter.",
+        help="Alias fuer den Default-Modus mit Live-Trackbars.",
     )
     args = parser.parse_args()
 
-    if args.tune:
-        run_live_parameter_tuning(
+    if args.assignments:
+        run_live_assignment_test(
             camera_index=args.camera_index,
-            window_name=args.window_name,
+            max_assign_dist=args.max_assign_dist,
+            window_name=args.window_name or "Figuren-Detektor (A1-C8)",
+            use_stabilizer=not args.raw,
+            min_ratio=args.min_ratio,
+            min_samples=args.min_samples,
+            debug_assignments=args.debug_assignments,
+            board_source=args.board_source,
         )
         return
 
-    run_live_assignment_test(
+    run_live_parameter_tuning(
         camera_index=args.camera_index,
-        max_assign_dist=args.max_assign_dist,
-        window_name=args.window_name,
-        use_stabilizer=not args.raw,
-        min_ratio=args.min_ratio,
-        min_samples=args.min_samples,
-        debug_assignments=args.debug_assignments,
-        board_source=args.board_source,
+        window_name=args.window_name or "Figuren-Detektor (Live-Tuning)",
     )
 
 
 if __name__ == "__main__":
+    print("Starte...", flush=True)
     main()

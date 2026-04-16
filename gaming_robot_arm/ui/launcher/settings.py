@@ -42,9 +42,9 @@ class LauncherSettings:
 
     mill_vision_attempts: int = 6
     mill_debug_vision: bool = False
+    mill_vision_preview: bool = False
     mill_vision_trigger: str = "auto"
-    mill_vision_detector: str = "hough"
-    mill_vision_classifier_model: str = ""
+    mill_vision_baseline_timeout_disabled: bool = False
 
     mill_uarm_port: str = "" if UARM_PORT is None else str(UARM_PORT)
     mill_uarm_enable_ai_moves: bool = False

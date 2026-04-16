@@ -6,15 +6,17 @@ import time
 from contextlib import nullcontext
 from typing import Mapping, TypedDict
 
-from gaming_robot_arm.config import REST_POS, SAFE_Z, UARM_PORT
-from gaming_robot_arm.calibration.calibration import load_board_pixels
+from gaming_robot_arm.config import CAMERA_INDEX, REST_POS, SAFE_Z, UARM_PORT
 from gaming_robot_arm.calibration.mill_default_calibration import MILL_PICK_Z, MILL_PLACE_Z, MILL_UARM_POSITIONS
 from gaming_robot_arm.control import UArmController
+from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
 from gaming_robot_arm.utils.cli import prompt_board_label, prompt_recording_enabled
-from gaming_robot_arm.utils.homography import fit_homography_from_correspondences, img_to_robot, load_homography
+from gaming_robot_arm.utils.homography import fit_homography_from_correspondences, img_to_robot
 from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.vision.detector_config import DEFAULT_FIGURE_PARAMS, FIGURE_DETECTOR_CONFIG_PATH
 from gaming_robot_arm.vision.figure_detector import detect_board_assignments
-from gaming_robot_arm.vision.recording import recording_session
+from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
+from gaming_robot_arm.vision.recording import open_camera, recording_session
 
 # Temporärer Korrekturwert: uArm fährt beim Anfahren der Figur zu weit in +Y.
 PICKUP_Y_OFFSET_MM = 0.0
@@ -27,12 +29,6 @@ class BoardAssignment(TypedDict):
     label: str
     centroid: tuple[float, float]
     color: str
-
-
-def _as_float_board_pixels(
-    pixels: dict[str, tuple[int, int]] | dict[str, tuple[float, float]],
-) -> BoardPixels:
-    return {label: (float(u), float(v)) for label, (u, v) in pixels.items()}
 
 
 def _parse_assignment(raw_assignment: Mapping[str, object]) -> BoardAssignment | None:
@@ -49,31 +45,52 @@ def _parse_assignment(raw_assignment: Mapping[str, object]) -> BoardAssignment |
     return {"label": label, "centroid": (float(u), float(v)), "color": color}
 
 
-def main() -> None:
-    H, loaded_board_pixels = load_homography()
-    board_pixels: BoardPixels = _as_float_board_pixels(loaded_board_pixels)
-    if not board_pixels:
-        try:
-            board_pixels = _as_float_board_pixels(load_board_pixels())
-        except FileNotFoundError as exc:
-            raise SystemExit(
-                "Keine Brett-Pixel gefunden. Bitte `python -m gaming_robot_arm.calibration.calibration` "
-                "(Option 1) ausfuehren."
-            ) from exc
+def _detect_initial_board_pixels(camera_index: int, attempts: int = 3) -> BoardPixels | None:
+    """Öffnet Kamera, erkennt das Brett und gibt Pixel-Positionen im aktuellen Frame zurück."""
+    try:
+        with open_camera(camera_index=camera_index) as cam:
+            for _ in range(5):  # Kamera warmlaufen lassen
+                cam.read()
+            for attempt in range(attempts):
+                ret, frame = cam.read()
+                if not ret:
+                    logger.warning("Kameraframe konnte nicht gelesen werden (Versuch %d).", attempt + 1)
+                    continue
+                positions, _ = detect_board_positions(frame, debug=False)
+                if len(positions) == len(BOARD_LABELS):
+                    return {label: (float(x), float(y)) for label, (x, y) in zip(BOARD_LABELS, positions)}
+                logger.warning(
+                    "Brett-Detektion lieferte %d statt %d Positionen (Versuch %d).",
+                    len(positions), len(BOARD_LABELS), attempt + 1,
+                )
+    except Exception:
+        logger.exception("Fehler bei der Brett-Erkennung beim Start.")
+    return None
 
-    H_default = fit_homography_from_correspondences(board_pixels, MILL_UARM_POSITIONS)
-    if H_default is not None:
-        H = H_default
-        logger.info("Homography aus Standard-Mill-Kalibrierung abgeleitet (mechanischer Adapter).")
-    elif H is None:
-        raise SystemExit(
-            "Keine Homography vorhanden und Standard-Mill-Kalibrierung unvollstaendig. "
-            "Bitte MILL_UARM_POSITIONS in gaming_robot_arm/calibration/mill_default_calibration.py pruefen."
-        )
-    else:
+
+def main() -> None:
+    if not FIGURE_DETECTOR_CONFIG_PATH.exists():
         logger.warning(
-            "Standard-Mill-Kalibrierung konnte nicht gefittet werden; verwende gespeicherte Homography."
+            "Keine figure_detector_config.json gefunden – Standard-Parameter aktiv "
+            "(brightness_split=%s). Falls Figuren falsch klassifiziert werden, bitte "
+            "`python gaming_robot_arm/vision/figure_detector.py` ausfuehren und Einstellungen speichern.",
+            DEFAULT_FIGURE_PARAMS["brightness_split"],
         )
+
+    logger.info("Erkenne Brett-Positionen aus aktuellem Kamerabild...")
+    board_pixels = _detect_initial_board_pixels(camera_index=CAMERA_INDEX)
+    if board_pixels is None:
+        raise SystemExit(
+            "Brett konnte nicht erkannt werden. Bitte Brett vor die Kamera legen und neu starten.\n"
+            "Tipp: `python gaming_robot_arm/vision/mill_board_detector.py` zum Testen der Brettdetektion."
+        )
+
+    H = fit_homography_from_correspondences(board_pixels, MILL_UARM_POSITIONS)
+    if H is None:
+        raise SystemExit(
+            "Homographie konnte nicht berechnet werden. Bitte MILL_UARM_POSITIONS pruefen."
+        )
+    logger.info("Brett erkannt, Homographie berechnet (%d Positionen).", len(board_pixels))
 
     controller = UArmController(port=UARM_PORT)
     swift = controller.swift
@@ -106,6 +123,7 @@ def main() -> None:
                     session=session if record_enabled else None,
                     labels_order=sorted(board_pixels.keys()),
                     debug_assignments=False,
+                    board_source="calibration",
                 )
                 assignments: list[BoardAssignment] = []
                 for raw_assignment in raw_assignments:
@@ -164,6 +182,7 @@ def main() -> None:
                         session=session if record_enabled else None,
                         labels_order=sorted(board_pixels.keys()),
                         debug_assignments=False,
+                        board_source="calibration",
                     )
                     for raw_assignment in raw_retry_assignments:
                         parsed = _parse_assignment(raw_assignment)
@@ -176,9 +195,10 @@ def main() -> None:
                     logger.error("Keine erkannte Figur fuer %s gefunden.", start_lbl)
                     continue
 
-                start_u, start_v = start_assignment["centroid"]
-                logger.info("Nutze erkannte Figur-Position fuer %s: u=%.1f v=%.1f", start_lbl, start_u, start_v)
+                live_u, live_v = start_assignment["centroid"]
+                logger.info("Erkannte Figur-Position fuer %s (live): u=%.1f v=%.1f", start_lbl, live_u, live_v)
 
+                start_u, start_v = board_pixels[start_lbl]
                 target_u, target_v = board_pixels[target_lbl]
                 start_x, start_y = img_to_robot(H, start_u, start_v)
                 target_x, target_y = img_to_robot(H, target_u, target_v)

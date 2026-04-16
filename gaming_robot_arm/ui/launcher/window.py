@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from .command_builder import build_command
-from .preview import load_board_overlay_detector, load_board_pixels_loader, load_figure_overlay_detector
+from .preview import load_board_overlay_detector, load_figure_overlay_detector
 from .process_runner import start_qprocess
 from .settings import LauncherSettings, load_launcher_settings, save_launcher_settings
 
@@ -86,9 +86,7 @@ class LauncherWindow(QMainWindow):
         self._runtime_output_only_active = False
         self._board_overlay_detector = None
         self._figure_overlay_detector = None
-        self._board_pixels_loader = None
-        self._camera_figure_board_coords_cache: dict[tuple[int, int], dict[str, tuple[int, int]] | None] = {}
-        self._camera_figure_board_coords_warned: set[tuple[int, int]] = set()
+        self._camera_figure_board_coords_cache: dict[bool, dict[str, tuple[int, int]]] = {}
         self._camera_overlay_error_key: str | None = None
         self._figure_stabilizer = None
         self._figure_stabilizer_labels: list = []
@@ -680,27 +678,23 @@ class LauncherWindow(QMainWindow):
             ],
             note_text="Legt fest, ob Vision-Zuege automatisch nach stabiler Brettaenderung oder manuell per Enter-Scan erkannt werden.",
         )
-        self._add_combo(
+        self._add_check(
             vision_form,
-            "mill_vision_detector",
-            "Erkennungs-Backend",
-            [
-                ("HoughCircles (klassisch)", "hough"),
-                ("KI-Classifier (MobileNet)", "classifier"),
-            ],
-            note_text="HoughCircles: schnelle klassische Kreiserkennung. Classifier: KI-basierte Figurenklassifikation (erfordert trainiertes Modell).",
-        )
-        self._add_line_edit(
-            vision_form,
-            "mill_vision_classifier_model",
-            "Classifier-Modellpfad",
-            note_text="Pfad zum trainierten Classifier-Modell (.pt). Nur relevant bei KI-Classifier-Backend.",
+            "mill_vision_baseline_timeout_disabled",
+            "Baseline-Timeout deaktivieren",
+            note_text="Deaktiviert den Timeout beim Warten auf ein ruhiges Brett. Nützlich bei langsamen oder instabilen Kameras.",
         )
         self._add_check(
             vision_form,
             "mill_debug_vision",
             "Debug-Logging für Vision-Zuordnung",
             note_text="Schreibt zusätzliche Vision-Details in die Logs, um Erkennung und Zuordnung zu prüfen.",
+        )
+        self._add_check(
+            vision_form,
+            "mill_vision_preview",
+            "Live-Vorschau mit Detector-Overlay",
+            note_text="Öffnet beim Spielstart ein Fenster mit Live-Kamerabild, gelben Brettpunkten (A1–C8) und erkannten Figuren inkl. Zuordnung.",
         )
         layout.addWidget(vision_box)
 
@@ -1120,39 +1114,21 @@ class LauncherWindow(QMainWindow):
         self._figure_overlay_detector = detector
         return detector
 
-    def _load_board_pixels_loader(self):
-        loader = self._board_pixels_loader
-        if callable(loader):
-            return loader
-        loader = load_board_pixels_loader()
-        self._board_pixels_loader = loader
-        return loader
-
-    def _camera_preview_board_coords(self, *, frame_width: int, frame_height: int) -> dict[str, tuple[int, int]] | None:
-        key = (int(frame_width), int(frame_height))
-        if key in self._camera_figure_board_coords_cache:
-            return self._camera_figure_board_coords_cache[key]
-
+    def _camera_preview_board_coords(self, frame) -> dict[str, tuple[int, int]] | None:
+        cached = self._camera_figure_board_coords_cache.get(True)
+        if cached is not None:
+            return cached
         try:
-            load_board_pixels = self._load_board_pixels_loader()
-            board_coords = load_board_pixels()
-            normalized = {str(lbl): (int(x), int(y)) for lbl, (x, y) in board_coords.items()}
-            self._camera_figure_board_coords_cache[key] = normalized
-            return normalized
-        except FileNotFoundError:
-            self._camera_figure_board_coords_cache[key] = None
-            if key not in self._camera_figure_board_coords_warned:
-                self._camera_figure_board_coords_warned.add(key)
-                self._append_log(
-                    "[launcher] Figure-Overlay ohne Feldlabels: keine Brett-Kalibrierung gefunden "
-                    "(cam_to_robot_homography.json).\n"
-                )
-            return None
+            from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
+            from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
+            positions, _ = detect_board_positions(frame, debug=False, return_bw=False)
+            if len(positions) != len(BOARD_LABELS):
+                return None
+            labeled = {lbl: (int(x), int(y)) for lbl, (x, y) in zip(BOARD_LABELS, positions)}
+            self._camera_figure_board_coords_cache[True] = labeled
+            return labeled
         except Exception as exc:
-            self._camera_figure_board_coords_cache[key] = None
-            if key not in self._camera_figure_board_coords_warned:
-                self._camera_figure_board_coords_warned.add(key)
-                self._append_log(f"[launcher] Figure-Overlay: Brett-Kalibrierung konnte nicht geladen werden: {exc}\n")
+            self._append_log(f"[launcher] Figure-Overlay: Live-Brett-Detektion fehlgeschlagen: {exc}\n")
             return None
 
     def _apply_camera_preview_overlay(self, frame, mode: str):
@@ -1171,14 +1147,8 @@ class LauncherWindow(QMainWindow):
         if mode == "figure":
             detect_figures = self._load_figure_overlay_detector()
             annotated_input = frame.copy()
-            frame_height = int(getattr(annotated_input, "shape", [0, 0])[0])
-            frame_width = int(getattr(annotated_input, "shape", [0, 0])[1])
-            board_coords = None
-            labels_order = None
-            if frame_width > 0 and frame_height > 0:
-                board_coords = self._camera_preview_board_coords(frame_width=frame_width, frame_height=frame_height)
-                if board_coords:
-                    labels_order = sorted(board_coords.keys())
+            board_coords = self._camera_preview_board_coords(annotated_input)
+            labels_order = sorted(board_coords.keys()) if board_coords else None
             result = detect_figures(
                 annotated_input,
                 board_coords=board_coords,
@@ -1315,7 +1285,6 @@ class LauncherWindow(QMainWindow):
         self._camera_capture = capture
         self._camera_preview_index = index
         self._camera_figure_board_coords_cache.clear()
-        self._camera_figure_board_coords_warned.clear()
         self._camera_overlay_error_key = None
         self._figure_stabilizer = None
         self._figure_stabilizer_labels = []
@@ -1840,6 +1809,7 @@ class LauncherWindow(QMainWindow):
             "mill_no_capture_draw",
             "mill_random_tiebreak",
             "mill_debug_vision",
+            "mill_vision_preview",
             "mill_uarm_enable_ai_moves",
             "mill_uarm_move_both_players",
         }

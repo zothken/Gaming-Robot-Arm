@@ -1,0 +1,12 @@
+{
+  "blur_ksize": 11,
+  "thresh_block": 89,
+  "thresh_c": 15,
+  "min_radius": 30,
+  "max_radius": 40,
+  "hough_dp": 0.2,
+  "hough_min_dist": 26,
+  "hough_param1": 15,
+  "hough_param2": 20,
+  "brightness_split": 128
+}

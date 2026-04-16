@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import re
 import threading
-from queue import Queue
+from queue import Empty, Queue
+from time import perf_counter
 from typing import TYPE_CHECKING, Sequence
 
 from .stt import AudioProcess
@@ -19,17 +20,7 @@ if TYPE_CHECKING:
     from gaming_robot_arm.games.common.interfaces import Move
 
 
-# ---------------------------------------------------------------------------
-# Zahlwort-Mapping (Fallback: Zugnummer nennen)
-# ---------------------------------------------------------------------------
-
-_GERMAN_NUMBERS: dict[str, int] = {
-    "eins": 1, "ein": 1, "zwei": 2, "zwo": 2, "drei": 3, "vier": 4,
-    "fünf": 5, "fuenf": 5, "sechs": 6, "sieben": 7, "acht": 8,
-    "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwoelf": 12,
-    "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15, "sechzehn": 16,
-    "siebzehn": 17, "achtzehn": 18, "neunzehn": 19, "zwanzig": 20,
-}
+VOICE_MOVE_TIMEOUT_S = 60.0
 
 
 def _parse_number(text: str) -> int | None:
@@ -38,20 +29,28 @@ def _parse_number(text: str) -> int | None:
     if m:
         return int(m.group(1))
     lower = text.lower()
-    for word, n in _GERMAN_NUMBERS.items():
+    for word, n in MillCommands.GERMAN_NUMBERS.items():
         if word in lower:
             return n
     return None
 
 
-def _match_positions_to_move(positions: list[str], legal_moves: Sequence[Move]) -> Move | None:
-    """Mappt extrahierte Positionen auf einen eindeutigen legalen Zug."""
+def _match_positions_to_move(
+    positions: list[str], legal_moves: Sequence[Move]
+) -> tuple[Move | None, str]:
+    """Mappt extrahierte Positionen auf einen eindeutigen legalen Zug.
+
+    Gibt (move, reason) zurueck.
+    reason: "ok" | "illegal" | "ambiguous" | "no_positions"
+    """
     if len(positions) == 0:
-        return None
+        return None, "no_positions"
     if len(positions) == 1:
         # Setzphase: nur Zielfeld
         candidates = [m for m in legal_moves if m.dst == positions[0] and m.src is None]
-        return candidates[0] if len(candidates) == 1 else None
+        if len(candidates) == 1:
+            return candidates[0], "ok"
+        return None, "ambiguous" if len(candidates) > 1 else "illegal"
     # Zugphase: src + dst (+ optionaler Schlag)
     src, dst = positions[0], positions[1]
     capture = positions[2] if len(positions) >= 3 else None
@@ -59,7 +58,9 @@ def _match_positions_to_move(positions: list[str], legal_moves: Sequence[Move]) 
         m for m in legal_moves
         if m.src == src and m.dst == dst and (capture is None or m.capture == capture)
     ]
-    return candidates[0] if len(candidates) == 1 else None
+    if len(candidates) == 1:
+        return candidates[0], "ok"
+    return None, "ambiguous" if len(candidates) > 1 else "illegal"
 
 
 def _format_move(move: Move) -> str:
@@ -105,21 +106,35 @@ class VoiceBridge:
             name="voice-cmd",
         ).start()
 
-    def listen_for_move(self, legal_moves: Sequence[Move]) -> Move:
-        """Blockiert bis ein gueltiger Zug gesprochen wurde.
+    def listen_for_move(
+        self, legal_moves: Sequence[Move], timeout_s: float = VOICE_MOVE_TIMEOUT_S
+    ) -> Move | None:
+        """Blockiert bis ein gueltiger Zug gesprochen wurde oder das Zeitlimit ablaeuft.
 
         Primaer: Positionen aus CommandProcess (z.B. ["A1", "B2"]).
         Fallback: Zugnummer aus der angezeigten Liste (z.B. "drei").
+        Gibt None zurueck wenn das Zeitlimit ablaeuft.
         """
         print("\nLegale Zuege:")
         for idx, move in enumerate(legal_moves, start=1):
             print(f"  [{idx:02d}] {_format_move(move)}")
         print("Bitte Zug sprechen (z.B. 'A1 nach B2' oder Zugnummer 'drei')...")
 
-        while True:
-            positions = self._match_queue.get()
+        deadline = perf_counter() + timeout_s
 
-            move = _match_positions_to_move(positions, legal_moves)
+        while True:
+            remaining = deadline - perf_counter()
+            if remaining <= 0:
+                print("Spracherkennung: Zeitlimit abgelaufen.")
+                return None
+
+            try:
+                positions = self._match_queue.get(timeout=remaining)
+            except Empty:
+                print("Spracherkennung: Zeitlimit abgelaufen.")
+                return None
+
+            move, reason = _match_positions_to_move(positions, legal_moves)
             if move is not None:
                 print(f"Erkannt (Position): {positions} -> {_format_move(move)}")
                 return move
@@ -134,7 +149,13 @@ class VoiceBridge:
                     print(f"Erkannt (Nummer): {positions[0]} -> Zug {number}: {_format_move(move)}")
                     return move
 
-            print(f"Nicht als Zug erkannt: {positions}. Bitte erneut sprechen.")
+            pos_str = " -> ".join(positions)
+            if reason == "illegal":
+                print(f"Illegaler Zug: '{pos_str}' ist kein gueltiger Zug. Bitte erneut sprechen.")
+            elif reason == "ambiguous":
+                print(f"Mehrdeutig: '{pos_str}' – mehrere Zuege moeglich. Schlagfeld angeben (z.B. 'A1 B2 C3').")
+            else:
+                print(f"Nicht erkannt: {positions}. Bitte erneut sprechen.")
 
     def shutdown(self) -> None:
         self._audio.recorder.shutdown()

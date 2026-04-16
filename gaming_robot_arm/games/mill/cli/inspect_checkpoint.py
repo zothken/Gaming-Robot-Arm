@@ -139,7 +139,7 @@ def _print_optimizer_summary(checkpoint: dict[str, Any]) -> None:
     state_count = len(state) if isinstance(state, dict) else 0
     print(f"  param_groups: {group_count}")
     print(f"  state_entries: {state_count}")
-    if group_count > 0 and isinstance(param_groups[0], dict):
+    if isinstance(param_groups, list) and group_count > 0 and isinstance(param_groups[0], dict):
         sample = param_groups[0]
         learning_rate = sample.get("lr", "-")
         weight_decay = sample.get("weight_decay", "-")

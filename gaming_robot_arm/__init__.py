@@ -1,11 +1,11 @@
 """Paket-Exporte fuer die Gaming-Robot-Arm-Laufzeit."""
 
 try:
-    from .runtime import VisionControlRuntime
+    from .runtime import VisionControlRuntime  # pyright: ignore[reportAssignmentType]
 except ModuleNotFoundError as exc:
     _runtime_import_error = exc
 
-    class VisionControlRuntime:  # type: ignore[no-redef]
+    class VisionControlRuntime:  # type: ignore[no-redef,assignment]  # pyright: ignore[reportAssignmentType]
         """Laufzeit-Platzhalter, der bei Nutzung einen klaren Abhaengigkeitsfehler wirft."""
 
         def __init__(self, *args, **kwargs) -> None:

@@ -71,13 +71,13 @@ Kalibrierung:
 | Modul/Datei | Funktion |
 | --- | --- |
 | `gaming_robot_arm/games/common/interfaces.py` | Gemeinsame Schnittstellen fuer Spiel-Logik. |
-| `gaming_robot_arm/games/mill/board.py` | Brett-Labels, Nachbarschaften und Mill-Linien. |
-| `gaming_robot_arm/games/mill/rules.py` | Regeln fuer Nine Men's Morris (Mill). |
-| `gaming_robot_arm/games/mill/settings.py` | Umschaltbare Regel-Einstellungen (z.B. Flying, Remis-Regeln) fuer spaeteres GUI-Menue. |
-| `gaming_robot_arm/games/mill/session.py` | Sitzungscontainer fuer Zustand + Zughistorie inkl. KI-Anbindung. |
-| `gaming_robot_arm/games/mill/builtin_ai.py` | Interne KIs (Heuristik + Alpha-Beta, ohne externe Engine/Installationen). |
-| `gaming_robot_arm/games/mill/playable.py` | Spielbare Kommandozeilen-Partie mit Moduswahl und optionaler Vision/Roboter-Anbindung. |
-| `gaming_robot_arm/games/mill/state.py` | Zustandscontainer fuer Mill. |
+| `gaming_robot_arm/games/mill/core/board.py` | Brett-Labels, Nachbarschaften und Mill-Linien. |
+| `gaming_robot_arm/games/mill/core/rules.py` | Regeln fuer Nine Men's Morris (Mill). |
+| `gaming_robot_arm/games/mill/core/settings.py` | Umschaltbare Regel-Einstellungen (z.B. Flying, Remis-Regeln) fuer spaeteres GUI-Menue. |
+| `gaming_robot_arm/games/mill/core/session.py` | Sitzungscontainer fuer Zustand + Zughistorie inkl. KI-Anbindung. |
+| `gaming_robot_arm/games/mill/ai/builtin.py` | Interne KIs (Heuristik + Alpha-Beta, ohne externe Engine/Installationen). |
+| `gaming_robot_arm/games/mill/runtime/game_loop.py` | Spielbare Kommandozeilen-Partie mit Moduswahl und optionaler Vision/Roboter-Anbindung. |
+| `gaming_robot_arm/games/mill/core/state.py` | Zustandscontainer fuer Mill. |
 
 ### Paket `examples/`
 
@@ -189,7 +189,7 @@ Kalibrierung:
      - `MILL_WHITE_RESERVE_POSITIONS` und `MILL_BLACK_RESERVE_POSITIONS` (3x3 Vorratskoordinaten fuer Setzzuege)
      - `MILL_PICK_Z`, `MILL_PLACE_Z` (Greif-/Ablagehoehen auf dem Brett)
      - `MILL_RESERVE_PICK_Z` (Pickhoehe fuer Reservepositionen)
-   - Optional: `BOARD_LINE_PARAMS` in `gaming_robot_arm/games/mill/mill_board_detector.py` fuer die Brett-Detektion feinjustieren.
+   - Optional: `BOARD_LINE_PARAMS` in `gaming_robot_arm/vision/mill_board_detector.py` fuer die Brett-Detektion feinjustieren.
 
 10. **Kalibrierung durchfuehren**
 
@@ -207,10 +207,23 @@ Kalibrierung:
    - Spielbare Mill-CLI starten: `python main.py --mode play-mill --game-mode human-vs-ai`.
    - Roboter-Test: `python examples/move_uArm.py` oder `python examples/move_figures.py`.
 
+### Vision-Trigger in spielbarer Muehle
+
+- Bei `--human-input vision` ist `--vision-trigger auto` der Standard.
+- `--vision-trigger auto` beobachtet das Brett kontinuierlich, wartet auf ein ruhiges/stabiles Bild und fuehrt den KI-Zug nur aus, wenn genau ein legaler menschlicher Zug erkannt wurde.
+- Bei unklarer, mehrdeutiger oder instabiler Beobachtung faellt die Runtime konservativ auf den manuellen Vision-Scan per Enter zurueck.
+- `--vision-trigger manual` behaelt das bisherige Verhalten bei: Zug auf dem realen Brett ausfuehren, dann per Enter einen Vision-Scan ausloesen.
+
+Beispiel:
+
+```bash
+python main.py --mode play-mill --game-mode human-vs-ai --human-input vision --vision-trigger auto
+```
+
 ## Mill-KI
 
 Fuer Mill stehen interne Zug-Provider zur Verfuegung
-(`gaming_robot_arm/games/mill/builtin_ai.py`):
+(`gaming_robot_arm/games/mill/ai/builtin.py`):
 
 ```python
 from gaming_robot_arm.games.mill import AlphaBetaMillAI, HeuristicMillAI, MillGameSession, MillRules
@@ -234,6 +247,57 @@ Der Vergleichstest ist generisch und kann beliebige Zug-Provider gegeneinander t
 gra-mill-benchmark --ai-a heuristic --ai-b alphabeta --ai-b-arg depth=4 --games 10
 gra-mill-benchmark --list-ai
 ```
+
+### Bewertungslogik der Mill-KI
+
+Die Gewichte sind Heuristiken, keine geloesten Spielwerte. Sie bilden strategische
+Prioritaeten aus den Quellen ab und werden an die konkrete Bretttopologie dieses
+Repos angepasst: [PlayMorris](https://www.playmorris.com/rules),
+[boardgames.zone](https://boardgames.zone/morris/rules) und
+[Kartik Kukreja](https://kartikkukreja.wordpress.com/2014/03/17/heuristicevaluation-function-for-nine-mens-morris/).
+
+| Feature | Bedeutung | Placement | Movement | Flying | Warum |
+| --- | --- | --- | --- | --- | --- |
+| `piece_delta` | Materialvorteil | `900 -> 1200` | `1500` | `1800` | Material bleibt immer wichtig; im Flying entscheidet ein Capture oft direkt die Partie. |
+| `closed_mill_delta` | Bereits geschlossene Muehlen | `70 -> 150` | `190` | `170` | Fruehe Muehlen sind nuetzlich, sollen im Opening aber nicht alle anderen Entwicklungsziele ueberdecken. |
+| `open_mill_delta` | Zwei-in-einer-Reihe mit offenem Abschluss | `140 -> 130` | `90` | `130` | Offene Muehlen sind im Placement und Flying wertvoller als starre Frueh-Muehlen. |
+| `double_mill_delta` | Wiederholt reformierbare Muehlen / Shared-Piece-Strukturen | `180 -> 150` | `180` | `220` | Doppelangriffe und Muehlenmotoren sind in allen spaeteren Phasen zentrale Gewinnmuster. |
+| `future_mobility_delta` | Summe freier Nachbarn der eigenen Steine | `55 -> 35` | `0` | `0` | Im Setzspiel geht es zuerst darum, spaetere Beweglichkeit und Anschlussfelder aufzubauen. |
+| `legal_mobility_delta` | Anzahl legaler Zuege | `0` | `18` | `8` | Im Movement zaehlen echte Zugoptionen; im Flying bleibt Mobilitaet relevant, aber weniger als Capture-/Schutzlogik. |
+| `blocked_delta` | Gegenspieler einbauen / eigene Steine nicht einsperren | `20 -> 25` | `50` | `0` | Blockaden werden erst im Movement wirklich stark; im Flying verliert Adjazenz als Limit fast ihre Wirkung. |
+| `protected_piece_delta` | Steine, die in einer geschlossenen Muehle geschuetzt sind | `0` | `0` | `80` | Im Flying steigen Wert und Ueberlebenswirkung geschuetzter Steine deutlich. |
+
+Im Brettmodell dieses Repos sind die ringverbindenden Punkte die geraden Labels.
+Besonders flexibel sind `B2`, `B4`, `B6` und `B8`, weil sie vier Nachbarn haben;
+Ecken wie `A1` haben nur zwei. Das ist die konkrete Uebersetzung dessen, was die
+Quellen als "midpoints" oder "intersections" beschreiben.
+
+**Placement**
+
+Ziel ist es, Optionen aufzubauen, Verbindungsfelder zu besetzen, Doppelangriffe
+vorzubereiten und den Gegner in schlechte Entwicklung zu druecken. Deshalb liegen
+`future_mobility_delta` und `open_mill_delta` vor fruehen `closed_mill_delta`-
+Belohnungen. `double_mill_delta` ist bewusst hoch gewichtet, weil Shared-Piece-
+Strukturen im Opening haeufig staerker sind als eine einzelne sofortige Muehle.
+`blocked_delta` bleibt niedrig, weil im Setzspiel noch keine echte Bewegungsblockade
+entsteht.
+
+**Movement**
+
+Im Mittelspiel steigen wiederholt reformierbare Muehlen, Zugzwang und echte
+Mobilitaet. Daher sind `double_mill_delta`, `blocked_delta` und
+`legal_mobility_delta` deutlich hoeher als im Placement. `future_mobility_delta`
+faellt weg, weil jetzt nicht mehr potenzielle Nachbarschaften, sondern reale legale
+Zuege zaehlen. `closed_mill_delta` bleibt wichtig, dominiert aber nicht blind ueber
+den Aufbau eines stabilen Muehlenmotors.
+
+**Flying**
+
+Im Flying geht es vor allem um Capture-Rennen, Schutz der verbleibenden Steine und
+das Vermeiden taktisch schlechter Muehlenschluesse. `blocked_delta` wird daher auf
+`0` gesetzt, weil Adjazenz fuer fliegende Spieler kaum noch einschraenkt.
+`protected_piece_delta` und `double_mill_delta` steigen, waehrend `piece_delta` am
+staerksten bleibt: Wer hier einen Stein verliert, kippt die Partie oft sofort.
 
 ### Neuronales Mill-Training (PyTorch)
 
@@ -259,8 +323,8 @@ Hinweis zu Regelkonsistenz: fuer Datengenerierung, Trainingsevaluation und Vergl
 
 Regelschalter fuer ein spaeteres GUI-Menue:
 
-- Backend-Einstellungen: `gaming_robot_arm/games/mill/settings.py` (`MillRuleSettings`)
-- Projekt-Standardwerte: `gaming_robot_arm/games/mill/settings.py` (`MILL_*` Konstanten)
+- Backend-Einstellungen: `gaming_robot_arm/games/mill/core/settings.py` (`MillRuleSettings`)
+- Projekt-Standardwerte: `gaming_robot_arm/games/mill/core/settings.py` (`MILL_*` Konstanten)
 
 Beispiel (ohne GUI, interne KI):
 
@@ -299,4 +363,4 @@ passt sehr wahrscheinlich die Kalibrierung (`gaming_robot_arm/calibration/*board
 
 - Stelle sicher, dass Kalibrierung und Runtime mit derselben Aufloesung laufen (ggf. `FRAME_WIDTH/FRAME_HEIGHT` in `gaming_robot_arm/config.py` setzen).
 - Kalibrierung neu ausfuehren: `python -m gaming_robot_arm.calibration.calibration` → Option 1.
-- Debug-Protokolle aktivieren: `python -m gaming_robot_arm.vision.figure_detector --debug-assignments`
+- Debug-Protokolle aktivieren: `python -m gaming_robot_arm.vision.figure_detector --assignments --debug-assignments`

@@ -7,7 +7,7 @@ from pathlib import Path
 from .settings import LauncherSettings
 
 
-def _as_int(value: object, label: str, *, minimum: int | None = None) -> int:
+def _as_int(value: int | float | str, label: str, *, minimum: int | None = None) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError) as exc:
@@ -17,7 +17,7 @@ def _as_int(value: object, label: str, *, minimum: int | None = None) -> int:
     return parsed
 
 
-def _as_float(value: object, label: str) -> float:
+def _as_float(value: int | float | str, label: str) -> float:
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
@@ -96,15 +96,9 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
 
     cmd.extend(["--vision-attempts", str(_as_int(settings.mill_vision_attempts, "Scan-Versuche", minimum=1))])
     add_bool("debug-vision", bool(settings.mill_debug_vision))
+    add_bool("vision-preview", bool(settings.mill_vision_preview))
     cmd.extend(["--vision-trigger", vision_trigger])
-
-    vision_detector = str(settings.mill_vision_detector).strip()
-    if vision_detector not in {"hough", "classifier"}:
-        raise ValueError("Vision-Detektor muss 'hough' oder 'classifier' sein")
-    cmd.extend(["--vision-detector", vision_detector])
-    vision_classifier_model = str(settings.mill_vision_classifier_model).strip()
-    if vision_classifier_model:
-        cmd.extend(["--vision-classifier-model", vision_classifier_model])
+    add_bool("baseline-timeout-disabled", bool(settings.mill_vision_baseline_timeout_disabled))
 
     uarm_port = str(settings.mill_uarm_port).strip()
     if uarm_port:

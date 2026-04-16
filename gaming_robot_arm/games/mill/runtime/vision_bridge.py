@@ -23,13 +23,13 @@ if TYPE_CHECKING:
 
 VisionTriggerMode = Literal["manual", "auto"]
 
-AUTO_BASELINE_TIMEOUT_S = 20.0
+AUTO_BASELINE_TIMEOUT_S = 60.0
 AUTO_MOVE_TIMEOUT_S = 60.0
 AUTO_BASELINE_CONFIRMATIONS = 3
 AUTO_MOVE_CONFIRMATIONS = 3
 AUTO_MOTION_PADDING_PX = 60
-AUTO_MOTION_THRESHOLD = 20
-AUTO_MOTION_RATIO = 0.015
+AUTO_MOTION_THRESHOLD = 55
+AUTO_MOTION_RATIO = 0.12
 AUTO_QUIET_FRAMES = 5
 
 
@@ -45,8 +45,82 @@ class _LiveVisionSession:
             raise RuntimeError("Konnte Kameraframe nicht lesen.")
         return frame
 
-    def write(self, _frame: Any) -> None:
+    def write(self, frame: np.ndarray) -> None:
         return
+
+
+class _VisionPreviewSession:
+    """Wrapper, der eine Live-Vorschau mit Figuren-Detektor-Overlay anzeigt."""
+
+    def __init__(
+        self,
+        inner: "RecordingSession | _LiveVisionSession",
+        bridge: "MillVisionBridge",
+        window_name: str = "Figuren-Detektor Vorschau",
+    ) -> None:
+        self._inner = inner
+        self._bridge = bridge
+        self._window_name = window_name
+        try:
+            cv2.namedWindow(self._window_name, cv2.WINDOW_NORMAL)
+        except Exception:
+            logger.exception("Vision-Preview-Fenster konnte nicht initialisiert werden.")
+
+    @property
+    def camera(self) -> Any:
+        return self._inner.camera
+
+    def read(self) -> Any:
+        frame = self._inner.read()
+        try:
+            self._render(frame)
+        except Exception:
+            logger.exception("Vision-Preview-Overlay fehlgeschlagen.")
+        return frame
+
+    def write(self, frame: np.ndarray) -> None:
+        self._inner.write(frame)
+
+    def close(self) -> None:
+        try:
+            cv2.destroyWindow(self._window_name)
+        except Exception:
+            pass
+
+    def _render(self, frame: np.ndarray) -> None:
+        from gaming_robot_arm.vision.figure_detector import (
+            detect_figures,
+            estimate_assign_distance,
+        )
+
+        preview = frame.copy()
+        board_pixels = dict(self._bridge.board_pixels) if self._bridge.board_pixels else {}
+        if board_pixels:
+            assign_dist = estimate_assign_distance(board_pixels)
+            detect_figures(
+                preview,
+                board_coords=board_pixels,
+                max_assign_dist=assign_dist,
+                labels_order=self._bridge.labels_order,
+                draw_assignments=True,
+            )
+            for label, (bx, by) in board_pixels.items():
+                cv2.circle(preview, (int(bx), int(by)), 4, (0, 255, 255), -1)
+                cv2.putText(
+                    preview,
+                    label,
+                    (int(bx) + 6, int(by) - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    (0, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+        else:
+            detect_figures(preview)
+
+        cv2.imshow(self._window_name, preview)
+        cv2.waitKey(1)
 
 
 @dataclass(slots=True)
@@ -190,33 +264,6 @@ class MillVisionBridge:
     debug_assignments: bool = False
     camera_index: int = CAMERA_INDEX
     board_source: BoardCoordSource = "calibration"
-    detector_backend: str = "hough"
-    classifier_model_path: str = ""
-
-    @classmethod
-    def from_calibration(
-        cls,
-        *,
-        attempts: int = 6,
-        debug_assignments: bool = False,
-        camera_index: int = CAMERA_INDEX,
-        detector_backend: str = "hough",
-        classifier_model_path: str = "",
-    ) -> "MillVisionBridge":
-        from gaming_robot_arm.calibration.calibration import load_board_pixels
-
-        board_pixels = load_board_pixels()
-        labels_order = sorted(board_pixels.keys())
-        return cls(
-            board_pixels={label: (float(u), float(v)) for label, (u, v) in board_pixels.items()},
-            labels_order=labels_order,
-            attempts=max(1, attempts),
-            debug_assignments=debug_assignments,
-            camera_index=camera_index,
-            board_source="calibration",
-            detector_backend=detector_backend,
-            classifier_model_path=classifier_model_path,
-        )
 
     @classmethod
     def for_live_session(
@@ -225,8 +272,6 @@ class MillVisionBridge:
         attempts: int = 6,
         debug_assignments: bool = False,
         camera_index: int = CAMERA_INDEX,
-        detector_backend: str = "hough",
-        classifier_model_path: str = "",
     ) -> "MillVisionBridge":
         return cls(
             board_pixels={},
@@ -235,17 +280,7 @@ class MillVisionBridge:
             debug_assignments=debug_assignments,
             camera_index=camera_index,
             board_source="calibration",
-            detector_backend=detector_backend,
-            classifier_model_path=classifier_model_path,
         )
-
-    def _make_detector(self) -> Any:
-        """Gibt den konfigurierten Detektor als Callable zurueck (oder None fuer HoughCircles)."""
-        if self.detector_backend != "classifier":
-            return None
-        from gaming_robot_arm.vision.classifier_figure_detector import ClassifierFigureDetector
-
-        return ClassifierFigureDetector(self.classifier_model_path)
 
     @staticmethod
     def _positions_to_board_pixels(positions: Sequence[tuple[int, int]]) -> dict[str, tuple[float, float]]:
@@ -264,49 +299,18 @@ class MillVisionBridge:
         session: RecordingSession | _LiveVisionSession,
         attempts: int = 6,
     ) -> None:
-        from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
+        from gaming_robot_arm.calibration.live_calibration import detect_live_board_pixels
 
-        max_attempts = max(1, int(attempts))
-        for attempt_idx in range(max_attempts):
-            try:
+        class _RecordingSession:
+            def read(self) -> np.ndarray:
                 frame = session.read()
-            except Exception as exc:
-                logger.warning(
-                    "Konnte keinen Kameraframe fuer temporaere Brettkalibrierung lesen (Versuch %s/%s): %s",
-                    attempt_idx + 1,
-                    max_attempts,
-                    exc,
-                )
-                continue
+                session.write(frame)
+                return frame
 
-            session.write(frame)
-            try:
-                positions, _annotated = detect_board_positions(frame, debug=False, return_bw=False)
-            except Exception:
-                logger.exception(
-                    "Mill-Board-Detektor fehlgeschlagen (Versuch %s/%s).",
-                    attempt_idx + 1,
-                    max_attempts,
-                )
-                continue
-
-            if len(positions) != len(BOARD_LABELS):
-                logger.debug(
-                    "Temporare Brettkalibrierung: %s/%s Positionen erkannt (Versuch %s/%s).",
-                    len(positions),
-                    len(BOARD_LABELS),
-                    attempt_idx + 1,
-                    max_attempts,
-                )
-                continue
-
-            self.board_pixels = self._positions_to_board_pixels(positions)
-            self.labels_order = list(BOARD_LABELS)
-            self.board_source = "calibration"
-            logger.info("Temporare Brettkalibrierung erstellt (%s Positionen).", len(self.board_pixels))
-            return
-
-        raise RuntimeError("Temporare Brettkalibrierung fehlgeschlagen.")
+        self.board_pixels = detect_live_board_pixels(_RecordingSession(), attempts=attempts)
+        self.labels_order = list(BOARD_LABELS)
+        self.board_source = "calibration"
+        logger.info("Temporaere Brettkalibrierung erstellt (%s Positionen).", len(self.board_pixels))
 
     def observe_board(
         self,
@@ -328,7 +332,6 @@ class MillVisionBridge:
             debug_assignments=self.debug_assignments,
             camera_index=self.camera_index,
             board_source=self.board_source,
-            detector=self._make_detector(),
         )
 
         for item in assignments:
@@ -364,15 +367,21 @@ class MillVisionBridge:
 
         fps = get_effective_camera_fps(session.camera)
         window_frames = max(1, int(round(fps)))
+        # min_samples muss deutlich kleiner als window_frames sein:
+        # Aufgrund von Verarbeitungsoverhead (Logging, Preview) ist der effektive
+        # Durchsatz oft nur ~4-6 fps statt der nominellen Kamera-fps. Haelt man
+        # min_samples == window_frames, dauert der Warmup 5-10 Sekunden, sodass
+        # der Mensch seinen Zug bereits ausfuehren kann bevor die Baseline
+        # bestaetigt ist -- dann schlaegt der Baseline-Check dauerhaft fehl.
+        min_samples = max(3, window_frames // 6)
         stream = BoardAssignmentStream(
             self.board_pixels,
             labels_order=self.labels_order,
             board_source=self.board_source,
             window_frames=window_frames,
-            min_samples=window_frames,
+            min_samples=min_samples,
             min_ratio=0.5,
             debug_assignments=self.debug_assignments,
-            detector=self._make_detector(),
         )
         motion_gate = _BoardMotionGate(self.board_pixels)
         trigger = _VisionAutoTriggerStateMachine()
@@ -455,6 +464,7 @@ __all__ = [
     "VisionTriggerMode",
     "_BoardMotionGate",
     "_LiveVisionSession",
+    "_VisionPreviewSession",
     "_VisionAutoTriggerStateMachine",
     "infer_moves_from_observation",
 ]

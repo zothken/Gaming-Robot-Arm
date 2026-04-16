@@ -170,10 +170,10 @@ def open_camera(
     warmup_frames: int = 10,
 ) -> Iterator[cv2.VideoCapture]:
     """Kontextmanager, der einen geoeffneten und vorkonfigurierten Kamerastream bereitstellt."""
-    cam = cv2.VideoCapture(camera_index)
+    cam = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
     if not cam.isOpened():
         cam.release()
-        cam = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        cam = cv2.VideoCapture(camera_index)
     if not cam.isOpened():
         raise RuntimeError(f"Konnte Kamera mit Index {camera_index} nicht oeffnen.")
 

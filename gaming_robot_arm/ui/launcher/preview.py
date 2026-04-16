@@ -15,10 +15,4 @@ def load_figure_overlay_detector():
     return detect_figures
 
 
-def load_board_pixels_loader():
-    from gaming_robot_arm.calibration.calibration import load_board_pixels
-
-    return load_board_pixels
-
-
-__all__ = ["load_board_overlay_detector", "load_board_pixels_loader", "load_figure_overlay_detector"]
+__all__ = ["load_board_overlay_detector", "load_figure_overlay_detector"]
