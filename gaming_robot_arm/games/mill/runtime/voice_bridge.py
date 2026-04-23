@@ -74,7 +74,7 @@ def _format_move(move: Move) -> str:
 
 
 # ---------------------------------------------------------------------------
-# VoiceBridge — Adapter (uebernimmt Rolle von Betreuer main.py)
+# VoiceBridge — Adapter (uebernimmt Rolle von main.py)
 # ---------------------------------------------------------------------------
 
 class VoiceBridge:

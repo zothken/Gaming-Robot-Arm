@@ -42,21 +42,45 @@ def load_robot_board_positions(source: str) -> dict[str, tuple[float, float]]:
     if source != "homography":
         raise ValueError(f"Nicht unterstuetzte Quelle fuer Roboter-Brettkoordinaten: {source}")
 
-    from gaming_robot_arm.utils.homography import img_to_robot, load_homography
+    from gaming_robot_arm.utils.homography import fit_homography_from_correspondences, img_to_robot
+    from gaming_robot_arm.vision.recording import open_camera
+    from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
+    from gaming_robot_arm.config import CAMERA_INDEX
 
-    H, board_pixels = load_homography()
-    if H is None or not board_pixels:
-        raise RuntimeError("Homography-Brettmapping angefordert, aber Kalibrierdaten sind unvollstaendig.")
+    board_pixels: dict[str, tuple[float, float]] | None = None
+    logger.info("Erkenne Brett-Positionen fuer Roboter-Kalibrierung (live)...")
+    with open_camera(camera_index=CAMERA_INDEX) as cam:
+        for _ in range(5):
+            cam.read()
+        for attempt in range(6):
+            ret, frame = cam.read()
+            if not ret:
+                logger.warning("Kameraframe nicht lesbar (Versuch %d/6).", attempt + 1)
+                continue
+            positions, _ = detect_board_positions(frame, debug=False)
+            if len(positions) == len(BOARD_LABELS):
+                board_pixels = {
+                    label: (float(x), float(y))
+                    for label, (x, y) in zip(BOARD_LABELS, positions)
+                }
+                break
+            logger.debug(
+                "Brett-Detektion: %d/%d Positionen (Versuch %d/6).",
+                len(positions), len(BOARD_LABELS), attempt + 1,
+            )
 
-    missing_labels = [label for label in BOARD_LABELS if label not in board_pixels]
-    if missing_labels:
-        raise RuntimeError(f"Homography-Brettmapping hat fehlende Labels: {', '.join(missing_labels)}")
+    if not board_pixels:
+        raise RuntimeError(
+            "Live-Bretterkennung fehlgeschlagen. Brett pruefen oder --robot-board-map default verwenden."
+        )
 
-    mapped: dict[str, tuple[float, float]] = {}
-    for label in BOARD_LABELS:
-        u, v = board_pixels[label]
-        mapped[label] = img_to_robot(H, float(u), float(v))
-    return mapped
+    uarm_positions = get_mill_uarm_positions()
+    H = fit_homography_from_correspondences(board_pixels, uarm_positions)
+    if H is None:
+        raise RuntimeError("Homographie konnte nicht berechnet werden (zu wenige Korrespondenzen).")
+
+    logger.info("Live-Homographie berechnet (%d Positionen).", len(board_pixels))
+    return {label: img_to_robot(H, float(u), float(v)) for label, (u, v) in board_pixels.items()}
 
 
 @dataclass(slots=True)

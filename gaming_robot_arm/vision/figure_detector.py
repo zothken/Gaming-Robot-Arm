@@ -1,3 +1,6 @@
+# Erkennt runde Spielsteine per HoughCircles, klassifiziert sie nach Farbe (hell/dunkel)
+# und ordnet sie den 24 Brettlabels zu. Enthaelt Live-Tuning und stabile Zuordnungs-Streams.
+
 from collections import Counter, deque
 from contextlib import nullcontext
 from dataclasses import dataclass

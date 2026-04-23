@@ -1,3 +1,6 @@
+# Echtzeit-Spracherkennung (RealtimeSTT/Whisper) fuer die Muehle-Sprachsteuerung.
+# Liest Audiodaten ein, transkribiert sie und legt den Text in eine Befehlsqueue.
+
 from RealtimeSTT import AudioToTextRecorder
 import pyaudio
 import numpy as np
@@ -15,7 +18,7 @@ class AudioProcess:
     # Priming-Prompt wird aus MillCommands generiert (single source of truth)
     _INITIAL_PROMPT = MillCommands().build_initial_prompt()
 
-    def __init__(self, cmd_q, model: str = "tiny"):
+    def __init__(self, cmd_q, model: str = "small"):
         self.cmd_q = cmd_q
         # compute_type muss zum device passen: CUDA-Builds unterstützen int8 nicht
         # zuverlaessig -> int8_float16. Fuer CPU bleibt int8 die richtige Wahl.

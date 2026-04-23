@@ -170,9 +170,23 @@ class _VisionAutoTriggerStateMachine:
                 self.state = "armed"
             return None
 
-        self.baseline_confirmations = 0
         if self.state == "acquiring_baseline":
-            return None
+            if len(matches) == 1:
+                # Human placed before baseline could be confirmed; bypass baseline
+                # and fall through to candidate detection below.
+                self.state = "armed"
+            else:
+                # Don't reset baseline confirmations for missed detections of existing
+                # pieces (no extra pieces = noise). Only reset if unexpected extra pieces
+                # appear that can't be explained by a single legal move.
+                if any(
+                    observed_board.get(lbl) is not None and expected_board.get(lbl) is None
+                    for lbl in BOARD_LABELS
+                ):
+                    self.baseline_confirmations = 0
+                return None
+
+        self.baseline_confirmations = 0
 
         if len(matches) != 1:
             self.state = "armed"
