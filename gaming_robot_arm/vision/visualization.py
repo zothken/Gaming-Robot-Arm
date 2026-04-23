@@ -1,3 +1,5 @@
+# Zeichenfunktionen fuer Vision-Debugging: Kreise, Farblabels, Brett-Feldzuordnungen.
+
 import cv2
 
 # Zeigt mehrere Bilder gleichzeitig in separaten Fenstern an.

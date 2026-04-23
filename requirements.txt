@@ -1,5 +1,0 @@
-# Kerninstallation fuer Laufzeit + Vision + Paket-Entry-Points.
--e .
-
-# Hardware-SDK (zur Laufzeit optional, aber auf dem Roboter-Host meist erforderlich).
-git+https://github.com/uarm-developer/uArm-Python-SDK@2.0

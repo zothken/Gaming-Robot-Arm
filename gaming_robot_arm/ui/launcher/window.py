@@ -754,7 +754,7 @@ class LauncherWindow(QMainWindow):
             ai_form,
             "mill_ai",
             "Backend",
-            ["heuristic", "alphabeta", "neural"],
+            ["heuristic", "alphabeta"],
             note_text="Wählt das KI-Backend für Computerzüge.",
         )
         self._add_line_edit(
@@ -762,24 +762,6 @@ class LauncherWindow(QMainWindow):
             "mill_ai_depth",
             "AlphaBeta-Tiefe",
             note_text="Suchtiefe für AlphaBeta. Höhere Werte sind stärker, aber langsamer.",
-        )
-        self._add_line_edit(
-            ai_form,
-            "mill_ai_model",
-            "Modellpfad",
-            note_text="Pfad zum Modell-Checkpoint für das Backend 'neural'.",
-        )
-        self._add_line_edit(
-            ai_form,
-            "mill_ai_temperature",
-            "Temperatur",
-            note_text="Steuert die Zufälligkeit bei der Zugauswahl. 0.0 ist deterministisch.",
-        )
-        self._add_line_edit(
-            ai_form,
-            "mill_ai_device",
-            "Gerät",
-            note_text="Ausführungsgerät für das neuronale Modell, z. B. auto, cpu oder cuda.",
         )
         self._add_line_edit(
             ai_form,
@@ -1822,8 +1804,6 @@ class LauncherWindow(QMainWindow):
             "mill_vision_attempts",
             "mill_robot_speed",
         }
-        float_keys = {"mill_ai_temperature"}
-
         payload: dict[str, object] = {"mode": self._current_mode()}
         for key, widget in self._widgets.items():
             if key in bool_keys:
@@ -1832,12 +1812,6 @@ class LauncherWindow(QMainWindow):
                 text = self._widget_text(widget).strip()
                 try:
                     payload[key] = int(text)
-                except Exception:
-                    payload[key] = text
-            elif key in float_keys:
-                text = self._widget_text(widget).strip()
-                try:
-                    payload[key] = float(text)
                 except Exception:
                     payload[key] = text
             else:

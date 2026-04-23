@@ -16,7 +16,6 @@ from gaming_robot_arm.games.mill import (
     AlphaBetaMillAI,
     HeuristicMillAI,
     MillGameSession,
-    NeuralMillAI,
     MillRuleSettings,
     MillRules,
 )
@@ -28,11 +27,6 @@ AI_REGISTRY: dict[str, type[Any]] = {
     "heuristic": HeuristicMillAI,
     "alphabeta": AlphaBetaMillAI,
 }
-NEURAL_AI_UNAVAILABLE_REASON: str | None = None
-if NeuralMillAI is not None:
-    AI_REGISTRY["neural"] = NeuralMillAI
-else:
-    NEURAL_AI_UNAVAILABLE_REASON = "neuronale KI nicht verfuegbar (numpy und/oder torch fehlen in dieser Python-Umgebung)"
 
 
 @dataclass(slots=True)
@@ -140,8 +134,6 @@ def list_available_ais() -> None:
     print("Interne KI-Bezeichner:")
     for key, ai_class in sorted(AI_REGISTRY.items()):
         print(f"  {key:<10} -> {ai_class.__module__}:{ai_class.__name__}")
-    if NEURAL_AI_UNAVAILABLE_REASON is not None:
-        print(f"  neural     -> {NEURAL_AI_UNAVAILABLE_REASON}")
 
 
 def get_init_parameters(ai_class: type[Any]) -> dict[str, inspect.Parameter]:

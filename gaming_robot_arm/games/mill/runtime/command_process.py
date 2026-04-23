@@ -1,5 +1,6 @@
-"""Befehlserkennung via spaCy + rapidfuzz (basiert auf Betreuer-Vorlage CommandProcess.py)."""
+"""Erkennt Muehle-Brettlabel in gesprochenem Text mit spaCy-Lemmatisierung und rapidfuzz-Fuzzy-Matching."""
 
+import re
 import spacy
 from rapidfuzz import fuzz, process
 from .mill_commands import MillCommands
@@ -13,7 +14,20 @@ class CommandProcess:
         self.list = list_cmd.cmd
         self.keys = list(list_cmd.cmd.keys())
 
-    def find_match(self,full_sentence):
+    def _normalize(self, text: str) -> str:
+        """Ersetzt Ring-Aliase und deutsche Zahlwörter, kombiniert dann 'B 3' -> 'B3'."""
+        result = text
+        for alias, letter in MillCommands.LETTER_ALIASES.items():
+            result = re.sub(rf'\b{re.escape(alias)}\b', letter, result, flags=re.IGNORECASE)
+        for alias, ring in MillCommands.RING_ALIASES.items():
+            result = re.sub(rf'\b{re.escape(alias)}\b', ring, result, flags=re.IGNORECASE)
+        for word, n in MillCommands.GERMAN_NUMBERS.items():
+            result = re.sub(rf'\b{re.escape(word)}\b', str(n), result, flags=re.IGNORECASE)
+        result = re.sub(r'\b([ABC])\W+([1-8])\b', r'\1\2', result, flags=re.IGNORECASE)
+        return result
+
+    def find_match(self, full_sentence):
+        full_sentence = self._normalize(full_sentence)
         doc = self.nlp(full_sentence)
         lemmata = [token.lemma_ for token in doc]
             # Hotword-Erkennung mit hotword_list
@@ -43,6 +57,7 @@ class CommandProcess:
 
     def find_all_matches(self, full_sentence):
         """Wie find_match(), aber gibt ALLE Treffer > 70 zurueck (fuer Multi-Positions-Zuege)."""
+        full_sentence = self._normalize(full_sentence)
         doc = self.nlp(full_sentence)
         lemmata = [token.lemma_ for token in doc]
         found = []

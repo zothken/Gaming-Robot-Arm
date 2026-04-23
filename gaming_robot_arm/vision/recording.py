@@ -19,7 +19,8 @@ from gaming_robot_arm.config import (
 )
 from gaming_robot_arm.utils.logger import logger
 
-FOURCC = cv2.VideoWriter.fourcc(*"MJPG")
+CAMERA_FOURCC = cv2.VideoWriter.fourcc(*"MJPG")
+WRITER_FOURCC = cv2.VideoWriter.fourcc(*"mp4v")
 
 FALLBACK_FRAME_WIDTH = 1920
 FALLBACK_FRAME_HEIGHT = 1080
@@ -182,7 +183,7 @@ def open_camera(
 
     def _apply_resolution(target_width: int, target_height: int) -> tuple[int, int]:
         if target_width >= 1280 or target_height >= 720:
-            cam.set(cv2.CAP_PROP_FOURCC, FOURCC)
+            cam.set(cv2.CAP_PROP_FOURCC, CAMERA_FOURCC)
         cam.set(cv2.CAP_PROP_FRAME_WIDTH, int(target_width))
         cam.set(cv2.CAP_PROP_FRAME_HEIGHT, int(target_height))
         actual_w = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
@@ -289,7 +290,7 @@ def _create_video_writer(
 
     writer = cv2.VideoWriter(
         str(output_path),
-        FOURCC,
+        WRITER_FOURCC,
         float(fps),
         (frame_width, frame_height),
     )

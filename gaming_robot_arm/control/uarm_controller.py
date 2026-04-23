@@ -1,3 +1,5 @@
+# Abstraktions-Wrapper um die uArm Swift Pro API mit sicheren Bewegungen, Greifer und Notfall-Stopp.
+
 import logging
 from typing import Any, Optional
 

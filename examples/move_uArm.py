@@ -20,7 +20,7 @@ from gaming_robot_arm.calibration.mill_default_calibration import (
     get_mill_uarm_positions,
 )
 from gaming_robot_arm.config import SAFE_Z, UARM_CALLBACK_THREADS, UARM_PORT
-from gaming_robot_arm import VisionControlRuntime
+from gaming_robot_arm.control import UArmController
 from gaming_robot_arm.utils.logger import logger
 from gaming_robot_arm.vision.recording import recording_session
 
@@ -99,11 +99,8 @@ def main(port: str | None = UARM_PORT) -> None:
     H, board_pixels = load_homography()
     board_robot = get_mill_uarm_positions()
 
-    with VisionControlRuntime(display=False) as runtime:
-        controller = runtime.ensure_controller(
-            port=port,
-            callback_thread_pool_size=UARM_CALLBACK_THREADS,
-        )
+    controller = UArmController(port=port, do_connect=True, callback_thread_pool_size=UARM_CALLBACK_THREADS)
+    try:
         swift = controller.swift
 
         if swift is None:
@@ -237,6 +234,8 @@ def main(port: str | None = UARM_PORT) -> None:
                     continue
 
                 logger.warning("Unbekannter Befehl: %s", cmd)
+    finally:
+        controller.disconnect()
 
 
 if __name__ == "__main__":

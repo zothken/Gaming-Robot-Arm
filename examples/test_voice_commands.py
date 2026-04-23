@@ -1,8 +1,7 @@
 """Interaktiver Test der Sprachsteuerung ohne laufendes Spiel.
 
 Verwendung:
-  python examples/test_voice_commands.py              # nutzt large-v3 (wie im Spiel)
-  python examples/test_voice_commands.py --model tiny # schneller Download, geringere Genauigkeit
+  python examples/test_voice_commands.py   # schneller Download, geringere Genauigkeit
 """
 
 import argparse
@@ -10,7 +9,7 @@ import logging
 import os
 import threading
 import warnings
-from queue import Queue
+from queue import Empty, Queue
 
 # Verbose-Output von Huggingface/Whisper/httpcore unterdrücken
 logging.basicConfig(level=logging.CRITICAL)
@@ -60,15 +59,14 @@ def main():
 
     try:
         while True:
-            matches = match_q.get()
-            print(f">>> Erkannte Befehle: {matches}")
+            try:
+                matches = match_q.get(timeout=0.5)
+                print(f">>> Erkannte Befehle: {matches}")
+            except Empty:
+                pass
     except KeyboardInterrupt:
-        print("\nTest wird beendet, fahre STT-Subprozess herunter...", flush=True)
+        print("\nTest wird beendet.", flush=True)
     finally:
-        try:
-            audio.recorder.shutdown()
-        except Exception as exc:
-            print(f"[WARN] STT-Shutdown fehlgeschlagen: {exc}", flush=True)
         os._exit(0)
 
 

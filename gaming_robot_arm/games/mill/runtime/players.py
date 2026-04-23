@@ -10,14 +10,13 @@ from gaming_robot_arm.games.common.interfaces import Player
 from gaming_robot_arm.games.mill import (
     AlphaBetaMillAI,
     HeuristicMillAI,
-    NeuralMillAI,
 )
 from gaming_robot_arm.games.mill.core.session import MillMoveProvider
 
 
 GAME_MODES = ("human-vs-human", "human-vs-ai", "ai-vs-ai")
 HUMAN_INPUT_MODES = ("manual", "vision", "voice")
-AI_BACKENDS = ("heuristic", "alphabeta", "neural")
+AI_BACKENDS = ("heuristic", "alphabeta")
 UARM_CONTROLLED_PLAYERS = ("none", "white", "black", "both", "legacy")
 
 
@@ -38,17 +37,6 @@ def create_ai_provider(args: argparse.Namespace, *, seed_offset: int = 0) -> Mil
 
     if ai_name == "alphabeta":
         return AlphaBetaMillAI(depth=args.mill_ai_depth, random_tiebreak=args.mill_random_tiebreak, seed=seed)
-
-    if ai_name == "neural":
-        if NeuralMillAI is None:
-            raise RuntimeError("NeuralMillAI nicht verfuegbar. Bitte ML-Abhaengigkeiten (torch, numpy) installieren.")
-        return NeuralMillAI(
-            model_path=args.mill_ai_model,
-            random_tiebreak=args.mill_random_tiebreak,
-            temperature=args.mill_ai_temperature,
-            seed=seed,
-            device=args.mill_ai_device,
-        )
 
     raise ValueError(f"Nicht unterstuetztes KI-Backend: {ai_name}")
 

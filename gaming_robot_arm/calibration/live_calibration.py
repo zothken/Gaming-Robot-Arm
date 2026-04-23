@@ -1,3 +1,6 @@
+# Interaktive und automatische Kalibrierung: Brett-Pixel per Kamera erfassen,
+# Homography fitten und live Brett-Positionen aus einem laufenden Frame-Stream detektieren.
+
 from __future__ import annotations
 
 import json

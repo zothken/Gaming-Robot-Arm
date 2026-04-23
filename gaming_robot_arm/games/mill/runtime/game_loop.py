@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
-from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
 from gaming_robot_arm.config import (
@@ -56,6 +55,7 @@ if TYPE_CHECKING:
 
 
 def add_mill_cli_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--camera-index", type=int, default=CAMERA_INDEX, help="Kamera-Index fuer den Vision-Modus.")
     game_group = parser.add_argument_group("Game/rule settings")
     game_group.add_argument(
         "--game-mode",
@@ -129,27 +129,6 @@ def add_mill_cli_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=3,
         help="Suchtiefe fuer AlphaBeta-KI.",
-    )
-    ai_group.add_argument(
-        "--ai-model",
-        dest="mill_ai_model",
-        type=Path,
-        default=Path("models/champion/mill_champion.pt"),
-        help="Modell-Checkpoint-Pfad fuer neuronale KI.",
-    )
-    ai_group.add_argument(
-        "--ai-temperature",
-        dest="mill_ai_temperature",
-        type=float,
-        default=0.0,
-        help="Temperatur fuer neuronales KI-Sampling.",
-    )
-    ai_group.add_argument(
-        "--ai-device",
-        dest="mill_ai_device",
-        type=str,
-        default="auto",
-        help="Geraet fuer neuronale KI: auto/cpu/cuda/...",
     )
     ai_group.add_argument(
         "--random-tiebreak",
@@ -249,7 +228,7 @@ def add_mill_cli_arguments(parser: argparse.ArgumentParser) -> None:
         "--robot-board-map",
         dest="mill_robot_board_map",
         choices=ROBOT_BOARD_MAPS,
-        default="default",
+        default="homography",
         help="Quelle der Roboter-Brettkoordinaten: feste Standardwerte oder Homography-Projektion.",
     )
 
@@ -676,7 +655,6 @@ def run_mill_game(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Startet eine spielbare Muehle-Sitzung (CLI + optionale Vision-/Roboter-Bridge).")
-    parser.add_argument("--camera-index", type=int, default=CAMERA_INDEX, help="Kamera-Index fuer den Vision-Modus.")
     add_mill_cli_arguments(parser)
     return parser
 

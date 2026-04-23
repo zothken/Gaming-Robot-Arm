@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gaming-robot-arm"
-version = "0.1.0"
-description = "Steuerungs- und Vision-Werkzeuge fuer den Gaming Robot Arm."
+version = "0.5.0"
+description = "Spielbares Muehlespiel mit uArm-Roboter, Computer Vision und grafischer Benutzeroberflaeche."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,12 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ml = [
-    "torch>=2.5",
-]
-vision-ml = [
-    "torch>=2.5",
-    "torchvision>=0.17",
+hardware = [
+    "uArm-Python-SDK @ git+https://github.com/uarm-developer/uArm-Python-SDK@2.0",
 ]
 ui = [
     "PySide6>=6.6",
@@ -30,19 +26,13 @@ speech = [
     "pyaudio>=0.2",
     "rapidfuzz>=3.0",
     "spacy>=3.0",
+    "de_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/de_core_news_sm-3.8.0/de_core_news_sm-3.8.0-py3-none-any.whl",
 ]
 
 [project.scripts]
 gra = "gaming_robot_arm.__main__:main"
 gra-mill-play = "gaming_robot_arm.games.mill.cli.play:main"
 gra-mill-benchmark = "gaming_robot_arm.games.mill.cli.benchmark:main"
-gra-mill-generate-teacher = "gaming_robot_arm.games.mill.cli.generate_teacher_data:main"
-gra-mill-generate-selfplay = "gaming_robot_arm.games.mill.cli.generate_selfplay_data:main"
-gra-mill-train = "gaming_robot_arm.games.mill.cli.train:main"
-gra-mill-watchdog = "gaming_robot_arm.games.mill.cli.train_watchdog:main"
-gra-mill-selfplay-loop = "gaming_robot_arm.games.mill.cli.selfplay_loop:main"
-gra-mill-inspect-checkpoint = "gaming_robot_arm.games.mill.cli.inspect_checkpoint:main"
-gra-mill-evolve = "gaming_robot_arm.games.mill.cli.evolve_population:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

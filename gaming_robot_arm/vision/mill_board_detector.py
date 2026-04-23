@@ -1,5 +1,5 @@
-# Board-Detector: Konturbasierte Erkennung der 3 verschachtelten Quadrate.
-# Erkennt die Muehle-Brettpositionen stabil ueber Konturen statt Hough-Linien.
+# Erkennt das Muehle-Brett per Konturdetektion: sucht drei verschachtelte Quadrate (A/B/C-Ring)
+# und berechnet daraus die 24 Feldpositionen (A1-C8) mit EMA-Glaettung.
 
 from dataclasses import dataclass
 from pathlib import Path

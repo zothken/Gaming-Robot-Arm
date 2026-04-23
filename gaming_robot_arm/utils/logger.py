@@ -1,3 +1,5 @@
+# Zentrales Logging-Setup fuer alle gaming-robot-arm Module.
+
 import logging
 
 logging.basicConfig(

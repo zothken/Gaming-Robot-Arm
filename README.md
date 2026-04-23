@@ -1,6 +1,6 @@
 # Gaming Robot Arm
 
-Dieses Projekt verbindet Computer Vision mit einem uArm Swift Pro: Eine Kamera erkennt Spielsteine auf einem Brett, ordnet sie Feldern zu und der Roboter kann Figuren sicher aufnehmen und umsetzen.
+Dieses Projekt realisiert ein vollstaendig spielbares Muehlespiel mit einem uArm Swift Pro Roboter. Eine grafische Benutzeroberflaeche (PySide6) erlaubt das Konfigurieren und Starten von Partien. Eine Kamera erkennt Spielsteine auf dem Brett per Computer Vision, der KI-Gegner berechnet Zuege per Minimax-Algorithmus, und der Roboter setzt die Figuren physisch um. Optionale Sprachsteuerung erlaubt dem menschlichen Spieler, Zuege per Mikrofon einzugeben.
 
 ## Gesamtarchitektur
 
@@ -14,8 +14,15 @@ Kamera
   -> gaming_robot_arm.control.UArmController (uArm Swift API)
 
 Kalibrierung:
-  gaming_robot_arm.vision.mill_board_detector -> gaming_robot_arm.calibration.calibration -> gaming_robot_arm/calibration/*.json
+  gaming_robot_arm.vision.mill_board_detector -> gaming_robot_arm.calibration.live_calibration -> gaming_robot_arm/calibration/*.json
   gaming_robot_arm.utils.homography (img_to_robot) nutzt die gespeicherte Homography
+
+Spielbare Muehle:
+  games/mill/runtime/game_loop.py
+    -> PlayerController (players.py)          -- human/ai/voice
+    -> MillVisionBridge (vision_bridge.py)    -- Kamera -> Brettbelegung -> Zug
+    -> VoiceBridge (voice_bridge.py)          -- Mikrofon -> Text -> Zug
+    -> MillRobotBridge (robot_bridge.py)      -- Zug -> uArm-Ausfuehrung
 ```
 
 ## Module und Dateien
@@ -25,15 +32,15 @@ Kalibrierung:
 | Modul/Datei | Funktion |
 | --- | --- |
 | `main.py` | Startpunkt/Launcher mit Modi fuer Vision-Loop und spielbare Mill-Partie. |
-| `gaming_robot_arm/` | Python-Paket (Runtime, Vision, Control, Utils, Kalibrierung). |
-| `pyproject.toml` | Paket-Metadaten und Python-Version (>=3.10). |
-| `requirements.txt` | Core-Abhaengigkeiten (inkl. editable Paket + uArm-SDK von GitHub). |
-| `requirements-ml.txt` | Optionale ML-Abhaengigkeiten (PyTorch fuer Neural-Mill-Training/Inferenz). |
+| `gaming_robot_arm/` | Python-Paket (Runtime, Vision, Control, Utils, Kalibrierung, Spiele). |
+| `pyproject.toml` | Paket-Metadaten, Python-Version (>=3.10) und alle Abhaengigkeiten (Kern + optionale Extras `hardware`, `ml`, `speech`, `ui`). |
 
 ### Paket `gaming_robot_arm/`
 
 | Modul/Datei | Funktion |
 | --- | --- |
+| `gaming_robot_arm/__main__.py` | Einstiegspunkt fuer `python -m gaming_robot_arm`. |
+| `gaming_robot_arm/app.py` | Argument-Parser und Modus-Dispatcher fuer UI, Vision-Loop und play-mill. |
 | `gaming_robot_arm/config.py` | Zentrale Einstellungen fuer Kamera, uArm-Grenzen, Pfade und Board-Parameter. |
 | `gaming_robot_arm/runtime.py` | Orchestriert Kamera-Loop, Detection und optionale Robotik. |
 
@@ -41,43 +48,106 @@ Kalibrierung:
 
 | Modul/Datei | Funktion |
 | --- | --- |
-| `gaming_robot_arm/utils/homography.py` | Laden/Umrechnen Pixel -> Roboterkoordinaten. |
+| `gaming_robot_arm/utils/homography.py` | Laden/Umrechnen Pixel -> Roboterkoordinaten via gespeicherter H-Matrix. |
 | `gaming_robot_arm/utils/logger.py` | Logging-Setup fuer alle Module. |
 | `gaming_robot_arm/utils/timing.py` | FPS-Tracker fuer Loop-Diagnose. |
+| `gaming_robot_arm/utils/cli.py` | Gemeinsame CLI-Helfer (Brett-Label-Abfrage, Aufnahme-Prompt) fuer Beispielskripte. |
 
 ### Paket `gaming_robot_arm/calibration/`
 
 | Modul/Datei | Funktion |
 | --- | --- |
-| `gaming_robot_arm/calibration/calibration.py` | Interaktive Erfassung von Brett-Pixeln und Homography-Fit. |
+| `gaming_robot_arm/calibration/live_calibration.py` | Interaktive Erfassung von Brett-Pixeln, Homography-Fit und Live-Bretterkennung aus Kameraframes. |
+| `gaming_robot_arm/calibration/mill_default_calibration.py` | Feste uArm-XY-Koordinaten (mm) fuer alle 24 Brettlabels sowie Reservepositionen je Farbe. |
 
 ### Paket `gaming_robot_arm/vision/`
 
 | Modul/Datei | Funktion |
 | --- | --- |
-| `gaming_robot_arm/vision/figure_detector.py` | Erkennung runder Figuren, Farbklassifikation, Zuordnung zu Brettlabels. |
-| `gaming_robot_arm/vision/mill_board_detector.py` | Brettlinien-Detektion und Schnittpunkte (A1-C8) fuer die Kalibrierung. |
+| `gaming_robot_arm/vision/figure_detector.py` | Erkennung runder Figuren, Farbklassifikation, stabile Zuordnung zu Brettlabels, Live-Tuning. |
+| `gaming_robot_arm/vision/mill_board_detector.py` | Konturbasierte Brettdetektion (drei Quadrate A/B/C) und 24 Feldpositionen mit EMA-Glaettung. |
+| `gaming_robot_arm/vision/detector_config.py` | Persistenz der Figure-Detector-Parameter (figure_detector_config.json). |
 | `gaming_robot_arm/vision/recording.py` | Kamera-Handling, Frame-Lesen, MP4-Aufzeichnung, Live-Preview. |
-| `gaming_robot_arm/vision/visualization.py` | Zeichnet Detections, IDs und Debug-Frames. |
+| `gaming_robot_arm/vision/visualization.py` | Zeichnet Detections, Feld-Labels und Debug-Frames. |
 
 ### Paket `gaming_robot_arm/control/`
 
 | Modul/Datei | Funktion |
 | --- | --- |
-| `gaming_robot_arm/control/uarm_controller.py` | Abstraktions-Wrapper der uArm Swift API mit sicheren Bewegungen und Grenzen. |
+| `gaming_robot_arm/control/uarm_controller.py` | Abstraktions-Wrapper der uArm Swift API mit sicheren Bewegungen, Greifer und Notstopp. |
 
-### Paket `gaming_robot_arm/games/`
+### Paket `gaming_robot_arm/games/common/`
 
 | Modul/Datei | Funktion |
 | --- | --- |
-| `gaming_robot_arm/games/common/interfaces.py` | Gemeinsame Schnittstellen fuer Spiel-Logik. |
-| `gaming_robot_arm/games/mill/core/board.py` | Brett-Labels, Nachbarschaften und Mill-Linien. |
-| `gaming_robot_arm/games/mill/core/rules.py` | Regeln fuer Nine Men's Morris (Mill). |
-| `gaming_robot_arm/games/mill/core/settings.py` | Umschaltbare Regel-Einstellungen (z.B. Flying, Remis-Regeln) fuer spaeteres GUI-Menue. |
-| `gaming_robot_arm/games/mill/core/session.py` | Sitzungscontainer fuer Zustand + Zughistorie inkl. KI-Anbindung. |
-| `gaming_robot_arm/games/mill/ai/builtin.py` | Interne KIs (Heuristik + Alpha-Beta, ohne externe Engine/Installationen). |
-| `gaming_robot_arm/games/mill/runtime/game_loop.py` | Spielbare Kommandozeilen-Partie mit Moduswahl und optionaler Vision/Roboter-Anbindung. |
-| `gaming_robot_arm/games/mill/core/state.py` | Zustandscontainer fuer Mill. |
+| `gaming_robot_arm/games/common/interfaces.py` | Gemeinsame Schnittstellen fuer Spiel-Logik (Move, Player, Rules). |
+
+### Paket `gaming_robot_arm/games/mill/core/`
+
+| Modul/Datei | Funktion |
+| --- | --- |
+| `gaming_robot_arm/games/mill/core/board.py` | Brett-Labels (A1-C8), Nachbarschaften (ADJACENT) und alle 16 Muehlenkombinationen (MILLS). |
+| `gaming_robot_arm/games/mill/core/constants.py` | Gemeinsame Konstanten: Spieler-Tuple und Steinzahl pro Seite. |
+| `gaming_robot_arm/games/mill/core/rules.py` | Vollstaendige Regelimplementierung (Setzphase, Bewegungsphase, Flying, Schlagzwang, Remisregeln). |
+| `gaming_robot_arm/games/mill/core/settings.py` | Umschaltbare Regel-Einstellungen (Flying, Dreifachwiederholung, Zugzwang-Remis). |
+| `gaming_robot_arm/games/mill/core/session.py` | Sitzungscontainer fuer Zustand und Zughistorie mit KI-Anbindung. |
+| `gaming_robot_arm/games/mill/core/state.py` | Unveraenderlicher Zustandscontainer (Board, to_move, placed, Zughistorie). |
+
+### Paket `gaming_robot_arm/games/mill/ai/`
+
+| Modul/Datei | Funktion |
+| --- | --- |
+| `gaming_robot_arm/games/mill/ai/builtin.py` | Interne KIs (Heuristik + Alpha-Beta mit Transpositionstabelle), keine externe Abhaengigkeit. |
+| `gaming_robot_arm/games/mill/ai/neural.py` | Neuronale KI auf Basis eines PyTorch-Policy/Value-Modells mit Temperatur-Sampling. |
+
+### Paket `gaming_robot_arm/games/mill/runtime/`
+
+| Modul/Datei | Funktion |
+| --- | --- |
+| `gaming_robot_arm/games/mill/runtime/game_loop.py` | Spielbare Kommandozeilen-Partie mit Vision-, Roboter- und Sprachanbindung. |
+| `gaming_robot_arm/games/mill/runtime/players.py` | Aufbau und Aufloesung von Spieler-Controllern (human/ai/voice) und uArm-Spielerzuweisung. |
+| `gaming_robot_arm/games/mill/runtime/robot_bridge.py` | Fuehrt Muehle-Zuege mit dem uArm aus (Pick-and-Place, Reserve- und Capture-Slots). |
+| `gaming_robot_arm/games/mill/runtime/vision_bridge.py` | Liest stabile Brettbelegung aus Kameraframes und erkennt ausgefuehrte menschliche Zuege. |
+| `gaming_robot_arm/games/mill/runtime/voice_bridge.py` | Koordiniert STT-, Befehlsverarbeitungs- und Zug-Mapping-Threads fuer Sprachsteuerung. |
+| `gaming_robot_arm/games/mill/runtime/stt.py` | Echtzeit-Spracherkennung via RealtimeSTT/Whisper, legt Transkripte in Befehlsqueue. |
+| `gaming_robot_arm/games/mill/runtime/mill_commands.py` | Brett-Label-Vokabular und Whisper-Priming-Prompt fuer die Sprachsteuerung. |
+| `gaming_robot_arm/games/mill/runtime/command_process.py` | Befehlserkennung via spaCy-Lemmatisierung und rapidfuzz-Fuzzy-Matching auf Brettlabels. |
+
+### Paket `gaming_robot_arm/games/mill/ml/`
+
+| Modul/Datei | Funktion |
+| --- | --- |
+| `gaming_robot_arm/games/mill/ml/model.py` | Zwei-Turm-Policy/Value-Netzwerk (PyTorch), Checkpoint-Speicherung und -Laden. |
+| `gaming_robot_arm/games/mill/ml/features.py` | Kodierung von Zustand (83-dim) und Zuegen (77-dim) als Float-Vektoren fuer das Modell. |
+| `gaming_robot_arm/games/mill/ml/training.py` | Mini-Batch-Trainingsschleife mit Policy-Cross-Entropy- und Value-MSE-Loss. |
+| `gaming_robot_arm/games/mill/ml/dataset.py` | Laedt JSONL-Trainingsdaten, validiert Shapes und baut Mini-Batches fuer PyTorch. |
+| `gaming_robot_arm/games/mill/ml/selfplay.py` | Hilfsfunktionen fuer Selbstspiel-Datengenerierung (Zug-Key, Ziel-Index-Suche). |
+| `gaming_robot_arm/games/mill/ml/evolution.py` | Helfer fuer evolutionaere Optimierung: Gewichts-Klonen und lineare Interpolation. |
+| `gaming_robot_arm/games/mill/ml/checkpoints.py` | Re-exportiert Checkpoint-Funktionen aus ml.model fuer abwaertskompatible Imports. |
+
+### Paket `gaming_robot_arm/games/mill/cli/`
+
+| Modul/Datei | Funktion |
+| --- | --- |
+| `gaming_robot_arm/games/mill/cli/play.py` | CLI-Argumente und Einstiegspunkt fuer spielbare Muehle-Sitzungen. |
+| `gaming_robot_arm/games/mill/cli/benchmark.py` | Generischer Kopf-an-Kopf-Benchmark fuer beliebige Zug-Provider-KIs. |
+| `gaming_robot_arm/games/mill/cli/train.py` | Trainiert ein PyTorch-Policy/Value-Modell aus JSONL-Teacher-Daten. |
+| `gaming_robot_arm/games/mill/cli/generate_teacher_data.py` | Erzeugt Lehrerdaten per AlphaBeta-Selbstspiel (gra-mill-generate-teacher). |
+| `gaming_robot_arm/games/mill/cli/generate_selfplay_data.py` | Erzeugt Trainingsdaten aus neuronalen Selbstspiel-Partien (gra-mill-generate-selfplay). |
+| `gaming_robot_arm/games/mill/cli/selfplay_loop.py` | Orchestriert iterative Schleifen: Selbstspiel -> Training -> Bewertung -> Promotion. |
+| `gaming_robot_arm/games/mill/cli/evolve_population.py` | Evolutionaeres Training der Neural-KI gegen AlphaBeta ohne Gradientenverfahren. |
+| `gaming_robot_arm/games/mill/cli/train_watchdog.py` | Watchdog: startet Datenerzeugungs- und Trainingskommandos neu, falls sie abstuerzen. |
+| `gaming_robot_arm/games/mill/cli/inspect_checkpoint.py` | Gibt Metadaten und Gewichte eines gespeicherten PyTorch-Checkpoints aus. |
+
+### Paket `gaming_robot_arm/ui/launcher/`
+
+| Modul/Datei | Funktion |
+| --- | --- |
+| `gaming_robot_arm/ui/launcher/window.py` | PySide6-Hauptfenster des Desktop-Launchers. |
+| `gaming_robot_arm/ui/launcher/command_builder.py` | Baut CLI-Kommandozeilen aus Launcher-Formularwerten. |
+| `gaming_robot_arm/ui/launcher/settings.py` | Persistenz und Datentransfer fuer Launcher-Einstellungen (JSON). |
+| `gaming_robot_arm/ui/launcher/preview.py` | Lazy Loader fuer Kamera-Preview-Integrationen im Launcher. |
+| `gaming_robot_arm/ui/launcher/process_runner.py` | QProcess-Starthelfer: startet und ueberwacht CLI-Unterprozesse aus dem Launcher. |
 
 ### Paket `examples/`
 
@@ -88,17 +158,13 @@ Kalibrierung:
 
 ### Daten und Ausgaben
 
-| Modul/Datei | Funktion |
+| Pfad | Funktion |
 | --- | --- |
-| `gaming_robot_arm/calibration/*.json` | Kalibrierungsdaten (Board-Pixel und Homography). |
+| `gaming_robot_arm/calibration/*.json` | Kalibrierungsdaten (Board-Pixel und Homography-Matrix). |
+| `gaming_robot_arm/vision/figure_detector_config.json` | Gespeicherte Figuren-Detektor-Parameter aus dem Live-Tuning. |
 | `Aufnahmen/` | Standardziel fuer Videoaufnahmen der Runtime. |
-
-### Paket `gaming_robot_arm/old/`
-
-| Modul/Datei | Funktion |
-| --- | --- |
-| `gaming_robot_arm/old/tracker.py` | Altes Tracking (wird derzeit nicht von der Runtime genutzt). |
-| `gaming_robot_arm/old/board_detector.py` | Alternative/ausfuehrliche Brettlinien-Detektion (Hough + Geometrie). |
+| `data/` | Trainingsdaten (JSONL) und Benchmark-Ausgaben. |
+| `models/` | Gespeicherte PyTorch-Checkpoints (z.B. `models/champion/mill_champion.pt`). |
 
 ## Installation
 
@@ -106,7 +172,7 @@ Kalibrierung:
    - Python >= 3.10 inkl. `pip` (Pruefung: `python --version`).
    - Git (zum Klonen des Repos).
    - uArm Swift Pro via USB (Treiber/Seriell-Port muss vom Betriebssystem erkannt werden).
-   - Kamera (USB/HDMI), die von OpenCV gelesen werden kann.
+   - Für Visuíon-Steuerung: Kamera (USB/HDMI), die von OpenCV gelesen werden kann.
 
 2. **Repository klonen**
 
@@ -147,65 +213,85 @@ Kalibrierung:
    python -m pip install --upgrade pip setuptools wheel
    ```
 
-5. **Kernabhaengigkeiten installieren**
-
-   ```bash
-   python -m pip install -r requirements.txt
-   ```
-
-   Hinweis: `requirements.txt` installiert das uArm SDK direkt von GitHub. Dazu ist Netzwerkzugriff erforderlich.
-
-6. **Optional: ML-Abhaengigkeiten installieren (nur fuer Neural Mill)**
-
-   ```bash
-   # Standard (kann CUDA-Pakete mitziehen):
-   python -m pip install -r requirements-ml.txt
-   ```
-
-   Linux nur CPU (kleiner/fuer CI oft sinnvoll):
-
-   ```bash
-   python -m pip install --index-url https://download.pytorch.org/whl/cpu -r requirements-ml.txt
-   ```
-
-7. **Projekt als Paket installieren (empfohlen)**
+5. **Paket installieren**
 
    ```bash
    python -m pip install -e .
    ```
 
-   Dadurch funktionieren Imports wie `gaming_robot_arm.config` oder `gaming_robot_arm.calibration` auch beim direkten Start von Skripten.
+   Damit werden die Kernabhaengigkeiten (`numpy`, `opencv-python`, `pyserial`) installiert und das Paket im Editable-Modus eingebunden, sodass Imports wie `gaming_robot_arm.config` ueberall funktionieren.
 
-8. **Hardware verbinden und Ports pruefen**
-   - Kamera anschliessen und im OS pruefen (z.B. Kamera-App).
-   - uArm per USB anschliessen. Falls der Port nicht automatisch erkannt wird, `UARM_PORT` in `gaming_robot_arm/config.py` setzen.
+6. **Optional: uArm-SDK installieren**
 
-9. **Projekt konfigurieren**
-   - `gaming_robot_arm/config.py` anpassen:
-     - `CAMERA_INDEX`, `FRAME_WIDTH`/`FRAME_HEIGHT` (optional; `None` = native Kameraaufloesung), `FRAME_RATE` (optional; `None` = native Kamera-FPS)
-     - `SAFE_Z`, `REST_POS`
-   - `gaming_robot_arm/calibration/mill_default_calibration.py` anpassen:
-     - `MILL_UARM_POSITIONS` (A1-C8 Brettkoordinaten)
-     - `MILL_WHITE_RESERVE_POSITIONS` und `MILL_BLACK_RESERVE_POSITIONS` (3x3 Vorratskoordinaten fuer Setzzuege)
-     - `MILL_PICK_Z`, `MILL_PLACE_Z` (Greif-/Ablagehoehen auf dem Brett)
-     - `MILL_RESERVE_PICK_Z` (Pickhoehe fuer Reservepositionen)
-   - Optional: `BOARD_LINE_PARAMS` in `gaming_robot_arm/vision/mill_board_detector.py` fuer die Brett-Detektion feinjustieren.
-
-10. **Kalibrierung durchfuehren**
+   Erforderlich fuer alle Roboter-Features (Pick-and-Place, Kalibrierung, Robot-Bridge). Das SDK wird direkt von GitHub bezogen und benoetigt Netzwerkzugriff:
 
    ```bash
-   python -m gaming_robot_arm.calibration.calibration
+   python -m pip install -e ".[hardware]"
    ```
 
-   - **Option 1**: Brett-Pixel erfassen (A1-C8) und `gaming_robot_arm/calibration/cam_to_robot_homography.json` (nur `board_pixels`) erzeugen/aktualisieren.
-   - **Option 2**: Homography fitten (mindestens 4 Punktpaare). Ergebnis wird in `gaming_robot_arm/calibration/cam_to_robot_homography.json` unter `H` gespeichert.
-   - **Option 3**: Vorhandene Kalibrierungsdateien auflisten.
+7. **Optional: ML-Abhaengigkeiten installieren (nur fuer Neural Mill)**
 
-11. **Installation verifizieren (empfohlen)**
-   - Kamera-Test: `python -m gaming_robot_arm.vision.recording` (Live-Vorschau, Stopp mit `q`).
-   - Runtime starten: `python main.py` (Standard: `--mode vision-loop`).
-   - Spielbare Mill-CLI starten: `python main.py --mode play-mill --game-mode human-vs-ai`.
-   - Roboter-Test: `python examples/move_uArm.py` oder `python examples/move_figures.py`.
+   ```bash
+   # Standard (zieht ggf. CUDA-Pakete mit):
+   python -m pip install -e ".[ml]"
+   ```
+
+   Linux nur CPU (kleiner, fuer CI empfohlen):
+
+   ```bash
+   python -m pip install --index-url https://download.pytorch.org/whl/cpu -e ".[ml]"
+   ```
+
+8. **Optional: Sprachsteuerung einrichten**
+
+   ```bash
+   python -m pip install -e ".[speech]"
+   ```
+
+9. **Optional: Desktop-UI installieren**
+
+   ```bash
+   python -m pip install -e ".[ui]"
+   ```
+
+10. **Alle Extras auf einmal installieren**
+
+    ```bash
+    python -m pip install -e ".[hardware,ml,speech,ui]"
+    ```
+
+    Dieser Befehl installiert auch die Kernabhaengigkeiten aus Schritt 5 — wer Schritt 10 ausfuehrt, kann Schritt 5 ueberspringen.
+
+11. **Hardware verbinden und Ports pruefen**
+    - Kamera anschliessen und im OS pruefen (z.B. Kamera-App).
+    - uArm per USB anschliessen. Falls der Port nicht automatisch erkannt wird, `UARM_PORT` in `gaming_robot_arm/config.py` setzen.
+
+12. **Projekt konfigurieren**
+    - `gaming_robot_arm/config.py` anpassen:
+      - `CAMERA_INDEX`, `FRAME_WIDTH`/`FRAME_HEIGHT` (optional; `None` = native Kameraaufloesung), `FRAME_RATE` (optional; `None` = native Kamera-FPS)
+      - `SAFE_Z`, `REST_POS`
+    - `gaming_robot_arm/calibration/mill_default_calibration.py` anpassen:
+      - `MILL_UARM_POSITIONS` (A1-C8 Brettkoordinaten)
+      - `MILL_WHITE_RESERVE_POSITIONS` und `MILL_BLACK_RESERVE_POSITIONS` (3x3 Vorratskoordinaten fuer Setzzuege)
+      - `MILL_PICK_Z`, `MILL_PLACE_Z` (Greif-/Ablagehoehen auf dem Brett)
+      - `MILL_RESERVE_PICK_Z` (Pickhoehe fuer Reservepositionen)
+    - Optional: `BOARD_LINE_PARAMS` in `gaming_robot_arm/vision/mill_board_detector.py` fuer die Brett-Detektion feinjustieren.
+
+13. **Kalibrierung durchfuehren**
+
+    ```bash
+    python -m gaming_robot_arm.calibration.live_calibration
+    ```
+
+    - **Option 1**: Brett-Pixel erfassen (A1-C8) und `gaming_robot_arm/calibration/cam_to_robot_homography.json` (nur `board_pixels`) erzeugen/aktualisieren.
+    - **Option 2**: Homography fitten (mindestens 4 Punktpaare). Ergebnis wird in `gaming_robot_arm/calibration/cam_to_robot_homography.json` unter `H` gespeichert.
+    - **Option 3**: Vorhandene Kalibrierungsdateien auflisten.
+
+14. **Installation verifizieren (empfohlen)**
+    - Kamera-Test: `python -m gaming_robot_arm.vision.recording` (Live-Vorschau, Stopp mit `q`).
+    - Runtime starten: `python main.py` (Standard: `--mode ui`).
+    - Spielbare Mill-CLI starten: `python main.py --mode play-mill --game-mode human-vs-ai`.
+    - Roboter-Test: `python examples/move_uArm.py` oder `python examples/move_figures.py`.
 
 ### Vision-Trigger in spielbarer Muehle
 
@@ -219,6 +305,18 @@ Beispiel:
 ```bash
 python main.py --mode play-mill --game-mode human-vs-ai --human-input vision --vision-trigger auto
 ```
+
+### Sprachsteuerung
+
+Mit `--human-input voice` kann ein menschlicher Spieler Zuege sprechen statt tippen:
+
+```bash
+python main.py --mode play-mill --game-mode human-vs-ai --human-input voice
+```
+
+Die Spracherkennung laeuft ueber RealtimeSTT/Whisper. Zuege werden als Brett-Label-Paare gesprochen (z.B. "A1 nach B2") oder als Zugnummer (z.B. "drei"). Beim Schlag muss das Capture-Feld angegeben werden (z.B. "A1 B2 C3").
+
+Abhaengigkeiten: `RealtimeSTT`, `pyaudio`, `spacy` (Modell `de_core_news_sm`), `rapidfuzz`.
 
 ## Mill-KI
 
@@ -319,6 +417,18 @@ Schritt 3: Neuronale KI gegen Basisgegner vergleichen:
 gra-mill-benchmark --ai-a neural --ai-a-arg model_path=models/mill_torch_v1.pt --ai-b alphabeta --ai-b-arg depth=4 --games 20
 ```
 
+Schritt 4 (optional): Iterative Selbstspiel-Schleife starten:
+
+```bash
+gra-mill-selfplay-loop --champion models/champion/mill_champion.pt
+```
+
+Schritt 5 (optional): Evolutionaeres Training ohne Gradientenverfahren:
+
+```bash
+gra-mill-evolve-population --generations 50 --population 20
+```
+
 Hinweis zu Regelkonsistenz: fuer Datengenerierung, Trainingsevaluation und Vergleichstest sollten dieselben Mill-Regelschalter genutzt werden (`--enable-flying`, `--enable-threefold-repetition`, `--enable-no-capture-draw`).
 
 Regelschalter fuer ein spaeteres GUI-Menue:
@@ -362,5 +472,5 @@ Wenn `gaming_robot_arm/vision/figure_detector.py` Kreise einzeichnet, aber **Roh
 passt sehr wahrscheinlich die Kalibrierung (`gaming_robot_arm/calibration/*board_pixels*`) nicht zur aktuellen Kamera-Aufloesung.
 
 - Stelle sicher, dass Kalibrierung und Runtime mit derselben Aufloesung laufen (ggf. `FRAME_WIDTH/FRAME_HEIGHT` in `gaming_robot_arm/config.py` setzen).
-- Kalibrierung neu ausfuehren: `python -m gaming_robot_arm.calibration.calibration` → Option 1.
+- Kalibrierung neu ausfuehren: `python -m gaming_robot_arm.calibration.live_calibration` → Option 1.
 - Debug-Protokolle aktivieren: `python -m gaming_robot_arm.vision.figure_detector --assignments --debug-assignments`

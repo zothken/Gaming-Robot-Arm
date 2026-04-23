@@ -7,9 +7,23 @@ class MillCommands:
     # Aktions-Verben, die Whisper erkennen soll
     VERBS: list[str] = ["setze", "schlage", "entferne", "nach", "von"]
 
+    # Umgangssprachliche Ring-Aliase: außen=A, mitte=B, innen=C
+    RING_ALIASES: dict[str, str] = {
+        "außen": "A", "aussen": "A",
+        "mitte": "B",
+        "innen": "C",
+    }
+
+    # Buchstaben-Aliase: Whisper-Fehlerkennung ähnlich klingender Wörter → A/B/C
+    LETTER_ALIASES: dict[str, str] = {
+        "ah": "A", "aha": "A",
+        "be": "B", "beh": "B",
+        "tse": "C", "ce": "C", "zee": "C", "zeh": "C",
+    }
+
     # Deutsche Zahlwörter für den Zugnummer-Fallback
     GERMAN_NUMBERS: dict[str, int] = {
-        "eins": 1, "ein": 1, "zwei": 2, "zwo": 2, "drei": 3, "vier": 4,
+        "eins": 1, "ein": 1, "zwei": 2, "zwo": 2, "drei": 3, "dreie": 3, "vier": 4,
         "fünf": 5, "fuenf": 5, "sechs": 6, "sieben": 7, "acht": 8,
         "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwoelf": 12,
         "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15, "sechzehn": 16,
@@ -25,8 +39,12 @@ class MillCommands:
         positions = ", ".join(sorted(self.cmd.keys()))
         verbs = ", ".join(self.VERBS)
         numbers = ", ".join(self.GERMAN_NUMBERS.keys())
+        ring_aliases = ", ".join(f"{alias}={ring}" for alias, ring in self.RING_ALIASES.items())
+        letter_aliases = ", ".join(f"{alias}={letter}" for alias, letter in self.LETTER_ALIASES.items())
         return (
             f"Mühle Brettspiel. Positionen: {positions}. "
+            f"Ring-Aliase: {ring_aliases}. "
+            f"Buchstaben-Aliase: {letter_aliases}. "
             f"Befehle: {verbs}. "
             f"Zahlen: {numbers}."
         )

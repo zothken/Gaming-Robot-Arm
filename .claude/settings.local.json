@@ -39,7 +39,20 @@
       "Bash(timeout 8 .venv/Scripts/python.exe -c \"from gaming_robot_arm.app import main; main\\([]\\)\")",
       "Bash(tasklist)",
       "Bash(taskkill //F //PID 8108 //PID 22236 //PID 35132 //PID 35580 //PID 26808)",
-      "Bash(taskkill //F //PID 8108)"
+      "Bash(taskkill //F //PID 8108)",
+      "Bash(python -c \"from faster_whisper import WhisperModel; import os; cache = os.path.expanduser\\('~/.cache/huggingface/hub'\\); print\\(cache\\)\")",
+      "Read(//c/Users/nando/.cache/huggingface/hub/**)",
+      "Bash(grep -E \"\\\\.\\(py\\)$\")",
+      "Bash(python -c \"from faster_whisper import WhisperModel; print\\('Lade small...'\\); m = WhisperModel\\('small'\\); print\\('Fertig!'\\)\")",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(cmd.exe /c \"taskkill /F /IM python.exe\")",
+      "Bash(python -c ' *)",
+      "Bash(git rm *)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m unittest discover -s tests/ -v)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\nando\\.cache\\huggingface\\hub\\models--Systran--faster-whisper-large-v3"
     ]
   }
 }

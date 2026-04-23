@@ -17,12 +17,6 @@ def _as_int(value: int | float | str, label: str, *, minimum: int | None = None)
     return parsed
 
 
-def _as_float(value: int | float | str, label: str) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{label} muss eine Zahl sein") from exc
-
 
 def build_command(settings: LauncherSettings, *, python_executable: str, entry_script: Path) -> list[str]:
     mode = str(settings.mode).strip()
@@ -47,8 +41,6 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
     vision_trigger = str(settings.mill_vision_trigger).strip()
     uarm_controlled_players = str(settings.mill_uarm_controlled_players).strip().lower()
     ai_backend = str(settings.mill_ai).strip()
-    ai_model = str(settings.mill_ai_model).strip()
-    ai_device = str(settings.mill_ai_device).strip()
     robot_board_map = str(settings.mill_robot_board_map).strip()
 
     if mill_mode not in {"human-vs-human", "human-vs-ai", "ai-vs-ai"}:
@@ -61,8 +53,8 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
         raise ValueError("Vision-Trigger muss 'manual' oder 'auto' sein")
     if uarm_controlled_players not in {"none", "white", "black", "both", "legacy"}:
         raise ValueError("uArm-Support muss none, white, black, both oder legacy sein")
-    if ai_backend not in {"heuristic", "alphabeta", "neural"}:
-        raise ValueError("KI-Backend muss heuristic, alphabeta oder neural sein")
+    if ai_backend not in {"heuristic", "alphabeta"}:
+        raise ValueError("KI-Backend muss heuristic oder alphabeta sein")
     if robot_board_map not in {"default", "homography"}:
         raise ValueError("Brett-Mapping muss default oder homography sein")
 
@@ -86,11 +78,6 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
 
     cmd.extend(["--ai", ai_backend])
     cmd.extend(["--ai-depth", str(_as_int(settings.mill_ai_depth, "AlphaBeta-Tiefe", minimum=1))])
-    if ai_model:
-        cmd.extend(["--ai-model", ai_model])
-    cmd.extend(["--ai-temperature", str(_as_float(settings.mill_ai_temperature, "Temperatur"))])
-    if ai_device:
-        cmd.extend(["--ai-device", ai_device])
     add_bool("random-tiebreak", bool(settings.mill_random_tiebreak))
     cmd.extend(["--seed", str(_as_int(settings.mill_seed, "Seed"))])
 

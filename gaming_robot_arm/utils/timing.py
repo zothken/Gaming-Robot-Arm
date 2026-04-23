@@ -1,3 +1,5 @@
+# Einfacher FPS-Tracker zur Messung der Bildrate innerhalb einer Kamera/Verarbeitungsschleife.
+
 import time
 
 

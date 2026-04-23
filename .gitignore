@@ -28,10 +28,19 @@ logs/
 
 # Trainings-/Datenartefakte
 data/
-models/checkpoints/
-models/selfplay/
-models/evolution_ab
-models/evolution_ab_continued/generations
+models/
+scripts/
+
+# ML-Quellcode
+gaming_robot_arm/games/mill/ml/
+gaming_robot_arm/games/mill/ai/neural.py
+gaming_robot_arm/games/mill/cli/train.py
+gaming_robot_arm/games/mill/cli/generate_teacher_data.py
+gaming_robot_arm/games/mill/cli/generate_selfplay_data.py
+gaming_robot_arm/games/mill/cli/evolve_population.py
+gaming_robot_arm/games/mill/cli/train_watchdog.py
+gaming_robot_arm/games/mill/cli/inspect_checkpoint.py
+gaming_robot_arm/games/mill/cli/selfplay_loop.py
 
 # Videoaufnahmen
 *.mp4
@@ -41,3 +50,5 @@ models/evolution_ab_continued/generations
 
 # Kalibrierungsausgabe
 calibration/cam_to_robot_homography.json
+
+.claude

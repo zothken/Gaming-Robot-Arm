@@ -34,9 +34,6 @@ class LauncherSettings:
 
     mill_ai: str = "alphabeta"
     mill_ai_depth: int = 3
-    mill_ai_model: str = "models/champion/mill_champion.pt"
-    mill_ai_temperature: float = 0.0
-    mill_ai_device: str = "auto"
     mill_random_tiebreak: bool = True
     mill_seed: int = 42
 
