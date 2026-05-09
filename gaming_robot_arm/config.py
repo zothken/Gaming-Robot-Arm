@@ -12,6 +12,7 @@ RECORDINGS_DIR = PROJECT_ROOT / "Aufnahmen"
 
 # Kalibrierung
 HOMOGRAPHY_PATH = CALIBRATION_DIR / "cam_to_robot_homography.json"
+RECALIBRATE_SIGNAL_PATH = CALIBRATION_DIR / ".recalibrate_request"
 
 
 # Kameraeinstellungen
@@ -23,6 +24,7 @@ FRAME_RATE: float | None = 30.0  # None = native Kamera-FPS verwenden
 # Datenspeicherung
 IMAGE_FORMAT = "jpg"  # Dateiformat fuer gespeicherte Bilder
 SAVE_INTERVAL = 5  # Sekunden zwischen automatischen Frames
+AUTOSAVE_PATH = PROJECT_ROOT / ".mill_autosave.json"  # Automatischer Spielstand-Speicherpfad
 
 # uArm Parameter (Startwerte)
 UARM_PORT = None  # Wird automatisch erkannt

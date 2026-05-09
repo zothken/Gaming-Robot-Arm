@@ -10,9 +10,10 @@ from gaming_robot_arm.config import CAMERA_INDEX, REST_POS, SAFE_Z, UARM_PORT
 from gaming_robot_arm.calibration.mill_default_calibration import MILL_PICK_Z, MILL_PLACE_Z, MILL_UARM_POSITIONS
 from gaming_robot_arm.control import UArmController
 from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
-from gaming_robot_arm.utils.cli import prompt_board_label, prompt_recording_enabled
-from gaming_robot_arm.utils.homography import fit_homography_from_correspondences, img_to_robot
-from gaming_robot_arm.utils.logger import logger
+from cli_helpers import prompt_board_label, prompt_recording_enabled
+from gaming_robot_arm.calibration.live_calibration import fit_homography_from_correspondences
+from gaming_robot_arm.games.mill.runtime.robot_bridge import img_to_robot
+from gaming_robot_arm.logger import logger
 from gaming_robot_arm.vision.detector_config import DEFAULT_FIGURE_PARAMS, FIGURE_DETECTOR_CONFIG_PATH
 from gaming_robot_arm.vision.figure_detector import detect_board_assignments
 from gaming_robot_arm.vision.mill_board_detector import detect_board_positions

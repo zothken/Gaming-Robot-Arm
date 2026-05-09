@@ -4,7 +4,7 @@
 from collections import Counter, deque
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, List, Literal, Mapping, Protocol, Sequence, Tuple, TypedDict, overload
+from typing import List, Literal, Mapping, Protocol, Sequence, Tuple, TypedDict, overload
 
 import cv2
 import numpy as np
@@ -12,7 +12,7 @@ import numpy as np
 from gaming_robot_arm.config import CAMERA_INDEX, FRAME_RATE
 from gaming_robot_arm.games.common.interfaces import Player
 from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
-from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.logger import logger
 from gaming_robot_arm.vision.detector_config import (
     load_figure_params,
     save_figure_params,
@@ -598,7 +598,6 @@ class AssignmentStabilizer:
 @overload
 def detect_figures(
     frame: np.ndarray,
-    tracker: Any = None,
     board_coords: Mapping[str, tuple[float, float]] | None = None,
     max_assign_dist: float | None = None,
     labels_order: Sequence[str] | None = None,
@@ -613,7 +612,6 @@ def detect_figures(
 @overload
 def detect_figures(
     frame: np.ndarray,
-    tracker: Any = None,
     board_coords: Mapping[str, tuple[float, float]] | None = None,
     max_assign_dist: float | None = None,
     labels_order: Sequence[str] | None = None,
@@ -627,7 +625,6 @@ def detect_figures(
 
 def detect_figures(
     frame: np.ndarray,
-    tracker: Any = None,
     board_coords: Mapping[str, tuple[float, float]] | None = None,
     max_assign_dist: float | None = None,
     labels_order: Sequence[str] | None = None,
@@ -716,9 +713,6 @@ def detect_figures(
         if detected_circles is not None:
             detected_circles = detected_circles[np.array(sorted_idx)]
 
-    if tracker is not None:
-        tracker.update(centroids, colors)
-
     assignments: List[Assignment] = []
     if board_coords:
         assignments = assign_figures_to_board(
@@ -761,8 +755,6 @@ def detect_figures(
         return frame, gray, blurred, thresh
 
     draw_detections(frame, detected_circles, colors, black_count, white_count)
-    # if tracker is not None:
-    #     draw_ids(frame, tracker)
 
     if draw_assignments and assignments:
         draw_assignment_labels(frame, assignments, font_scale=0.6)

@@ -19,13 +19,22 @@ from gaming_robot_arm.games.common.interfaces import Move, Player
 from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
 from gaming_robot_arm.games.mill.core.constants import PIECES_PER_PLAYER
 from gaming_robot_arm.games.mill.core.rules import other_player
-from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.logger import logger
 
 if TYPE_CHECKING:
     from gaming_robot_arm.control.uarm_controller import UArmController
+    from gaming_robot_arm.games.mill.core.state import MillState
 
 
 ROBOT_BOARD_MAPS = ("default", "homography")
+
+
+def img_to_robot(H: Any, u: float, v: float) -> tuple[float, float]:
+    """Wandelt Pixelkoordinaten (u,v) ueber die Homography in Roboter-XY um."""
+    import numpy as np
+    vec = H @ np.array([u, v, 1.0])
+    x, y = vec[:2] / vec[2]
+    return float(x), float(y)
 
 
 def build_default_reserve_positions() -> dict[Player, list[tuple[float, float]]]:
@@ -42,7 +51,7 @@ def load_robot_board_positions(source: str) -> dict[str, tuple[float, float]]:
     if source != "homography":
         raise ValueError(f"Nicht unterstuetzte Quelle fuer Roboter-Brettkoordinaten: {source}")
 
-    from gaming_robot_arm.utils.homography import fit_homography_from_correspondences, img_to_robot
+    from gaming_robot_arm.calibration.live_calibration import fit_homography_from_correspondences
     from gaming_robot_arm.vision.recording import open_camera
     from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
     from gaming_robot_arm.config import CAMERA_INDEX
@@ -189,6 +198,209 @@ class MillRobotBridge:
             except Exception:
                 logger.exception("Konnte Roboter nach Ausfuehrungsfehler nicht in sicheren Zustand bringen.")
             return False
+
+    def reverse_move(self, move: Move, *, player: Player) -> bool:
+        """Macht einen zuvor mit execute_move ausgefuehrten Zug physisch rueckgaengig.
+
+        Reihenfolge: erst geschlagene Figur aus der Reserve zurueck aufs Brett,
+        danach den Hauptzug umkehren (Stein vom Zielfeld zurueck auf Quellfeld
+        bzw. in die Reserve).
+        """
+        if self._controller is None:
+            self.connect()
+
+        try:
+            if move.capture is not None:
+                captured_player = other_player(player)
+                self._retreat_capture_reserve_slot(captured_player)
+                slots = self._reserve_slots.get(captured_player) or []
+                idx = self._capture_reserve_indices.get(captured_player, 0)
+                if not slots or idx >= len(slots):
+                    logger.warning(
+                        "Reverse-Move: keine Capture-Reserve-Position fuer %s; Stein bitte manuell zuruecklegen.",
+                        captured_player,
+                    )
+                else:
+                    src_xy = slots[idx]
+                    dst_xy = self.board_positions.get(move.capture)
+                    if dst_xy is None:
+                        logger.warning(
+                            "Reverse-Move: keine Brettkoordinate fuer Schlag-Label %s; Stein bitte manuell zuruecklegen.",
+                            move.capture,
+                        )
+                    else:
+                        self._pick_and_place(
+                            src_xy, dst_xy,
+                            src_pick_z=self.reserve_pick_z,
+                            pick_lift_z=MILL_PLACE_Z,
+                        )
+
+            if move.src is None:
+                self._retreat_reserve_slot(player)
+                slots = self._reserve_slots.get(player) or []
+                idx = self._reserve_indices.get(player, 0)
+                src_xy = self.board_positions.get(move.dst)
+                if src_xy is None:
+                    logger.warning(
+                        "Reverse-Move: keine Brettkoordinate fuer Ziel %s; Stein bitte manuell zuruecknehmen.",
+                        move.dst,
+                    )
+                elif not slots or idx >= len(slots):
+                    logger.warning(
+                        "Reverse-Move: keine Reserve-Position fuer %s; Stein bitte manuell zuruecknehmen.",
+                        player,
+                    )
+                else:
+                    dst_xy = slots[idx]
+                    self._pick_and_place(
+                        src_xy, dst_xy,
+                        src_pick_z=MILL_PICK_Z,
+                        pick_lift_z=self.reserve_pick_z,
+                    )
+            else:
+                src_xy = self.board_positions.get(move.dst)
+                dst_xy = self.board_positions.get(move.src)
+                if src_xy is None or dst_xy is None:
+                    logger.warning(
+                        "Reverse-Move: Koordinaten fuer %s -> %s nicht verfuegbar; Stein bitte manuell zuruecknehmen.",
+                        move.dst, move.src,
+                    )
+                else:
+                    self._pick_and_place(
+                        src_xy, dst_xy,
+                        src_pick_z=MILL_PICK_Z,
+                        pick_lift_z=MILL_PLACE_Z,
+                    )
+
+            self._move_to(*REST_POS)
+            return True
+        except Exception:
+            logger.exception("Physische Ruecknahme fuer Zug %s fehlgeschlagen", _format_move(move))
+            try:
+                controller = self._controller
+                if controller is not None and controller.swift is not None:
+                    controller.swift.set_pump(on=False)
+                    self._move_to(*REST_POS)
+            except Exception:
+                logger.exception("Konnte Roboter nach Reverse-Fehler nicht in sicheren Zustand bringen.")
+            return False
+
+    def _retreat_reserve_slot(self, player: Player) -> None:
+        idx = self._reserve_indices.get(player, 0)
+        if idx > 0:
+            self._reserve_indices[player] = idx - 1
+        else:
+            logger.warning("Reserve-Slot fuer %s bereits bei 0; Reverse inkonsistent.", player)
+
+    def _retreat_capture_reserve_slot(self, player: Player) -> None:
+        idx = self._capture_reserve_indices.get(player, 0)
+        if idx > 0:
+            self._capture_reserve_indices[player] = idx - 1
+        else:
+            logger.warning("Capture-Reserve-Slot fuer %s bereits bei 0; Reverse inkonsistent.", player)
+
+    def restore_board_state(self, state: MillState) -> None:
+        """Platziert alle Figuren aus dem gespeicherten Spielstand via Reserve auf dem Brett."""
+        for player in ("W", "B"):
+            pieces = sorted(pos for pos, owner in state.board.items() if owner == player)
+            for dst_label in pieces:
+                src_xy = self._next_reserve_slot(player)
+                dst_xy = self.board_positions.get(dst_label)
+                if src_xy is None:
+                    raise RuntimeError(
+                        f"Keine Reserve-Slots mehr fuer {player}; Wiederherstellung abgebrochen."
+                    )
+                if dst_xy is None:
+                    raise RuntimeError(
+                        f"Keine Roboterkoordinate fuer Brett-Position {dst_label}."
+                    )
+                self._pick_and_place(src_xy, dst_xy, src_pick_z=self.reserve_pick_z)
+                self._advance_reserve_slot(player)
+        self._move_to(*REST_POS)
+
+    def perform_game_end_animation(self, outcome: str) -> None:
+        """Fuehrt eine physische Animation des Spielergebnisses aus.
+
+        outcome: "win" (Siegestanz), "loss" (Kopfschuetteln) oder "draw" (neutral).
+        """
+        controller = self._require_controller()
+        swift = self._require_swift()
+        swift.set_pump(on=False)
+
+        cx, cy = 223.0, 0.0
+
+        def mv(x: float, y: float, z: float, speed: int) -> None:
+            controller.move_to(float(x), float(y), float(z), speed=speed)
+
+        try:
+            if outcome == "win":
+                mv(cx, cy, 130.0, 750)
+                for _ in range(3):
+                    mv(cx, 80.0, 110.0, 750)
+                    mv(cx, -80.0, 110.0, 750)
+                mv(cx, cy, 130.0, 750)
+                for _ in range(2):
+                    mv(cx, cy, 80.0, 750)
+                    mv(cx, cy, 130.0, 750)
+            elif outcome == "loss":
+                mv(cx, cy, 95.0, 350)
+                for _ in range(3):
+                    mv(cx, 55.0, 95.0, 350)
+                    mv(cx, -55.0, 95.0, 350)
+                mv(cx, cy, 80.0, 350)
+            else:  # draw
+                mv(cx, cy, 100.0, 400)
+                mv(cx, 35.0, 100.0, 400)
+                mv(cx, -35.0, 100.0, 400)
+                mv(cx, cy, 80.0, 400)
+        except Exception:
+            logger.exception("Fehler waehrend der Spielende-Animation.")
+            try:
+                swift.set_pump(on=False)
+            except Exception:
+                pass
+        finally:
+            self._move_to(*REST_POS)
+
+    def cleanup_board(self, state: MillState) -> None:
+        """Rauemt alle Figuren vom Brett zurueck in die Reserve."""
+        swift = self._require_swift()
+        try:
+            for player in ("W", "B"):
+                slots = self._reserve_slots.get(player, [])
+                pieces_on_board = sorted(
+                    pos for pos, owner in state.board.items() if owner == player
+                )
+                for pos_label in pieces_on_board:
+                    src_xy = self.board_positions.get(pos_label)
+                    if src_xy is None:
+                        logger.warning(
+                            "Aufraeuemen: keine Roboterkoordinate fuer Brett-Position %s; uebersprungen.",
+                            pos_label,
+                        )
+                        continue
+                    reserve_idx = self._capture_reserve_indices.get(player, 0)
+                    if reserve_idx >= len(slots):
+                        logger.warning(
+                            "Aufraeuemen: keine freien Reserve-Slots mehr fuer %s; uebersprungen.",
+                            player,
+                        )
+                        continue
+                    dst_xy = slots[reserve_idx]
+                    self._pick_and_place(src_xy, dst_xy, src_pick_z=MILL_PICK_Z)
+                    self._capture_reserve_indices[player] = reserve_idx + 1
+
+            for player in self._reserve_slots:
+                self._reserve_indices[player] = 0
+                self._capture_reserve_indices[player] = 0
+        except Exception:
+            logger.exception("Fehler waehrend des Brett-Aufraeumens.")
+            try:
+                swift.set_pump(on=False)
+            except Exception:
+                pass
+        finally:
+            self._move_to(*REST_POS)
 
     def _resolve_move_source(self, move: Move, player: Player) -> tuple[float, float] | None:
         if move.src is not None:

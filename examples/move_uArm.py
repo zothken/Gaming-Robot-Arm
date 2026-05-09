@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from contextlib import nullcontext
 from pathlib import Path
 import sys
 from threading import Event, Thread
-
-import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -21,82 +18,32 @@ from gaming_robot_arm.calibration.mill_default_calibration import (
 )
 from gaming_robot_arm.config import SAFE_Z, UARM_CALLBACK_THREADS, UARM_PORT
 from gaming_robot_arm.control import UArmController
-from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.logger import logger
 from gaming_robot_arm.vision.recording import recording_session
-
-H_FILE = ROOT / "gaming_robot_arm" / "calibration" / "cam_to_robot_homography.json"
-
-
-def load_homography() -> tuple[np.ndarray | None, dict[str, tuple[float, float]]]:
-    if not H_FILE.exists():
-        logger.warning(
-            "Homography-Datei nicht gefunden: %s. Pixel->Roboter-Mapping via Homography deaktiviert.",
-            H_FILE,
-        )
-        return None, {}
-
-    data = json.loads(H_FILE.read_text(encoding="utf-8"))
-    board_pixels = data.get("board_pixels", {})
-    if not board_pixels:
-        logger.warning("Homography enthaelt keine board_pixels. Pixel->Roboter-Mapping deaktiviert.")
-        return None, {}
-
-    return np.array(data["H"], dtype=np.float64), board_pixels
-
-
-def img_to_robot(H: np.ndarray, u: float, v: float) -> tuple[float, float]:
-    vec = H @ np.array([u, v, 1.0])
-    x, y = vec[:2] / vec[2]
-    return float(x), float(y)
-
 
 def handle_board_move(
     board_robot: dict[str, tuple[float, float]],
-    H: np.ndarray | None,
-    board_pixels: dict[str, tuple[float, float]],
     controller,
 ) -> bool:
-    if not board_robot and (H is None or not board_pixels):
-        logger.error("Keine Brett-Kalibrierung verfuegbar. Bitte Kalibrierung ausfuehren.")
-        return False
-
     lbl = input("Brett-Position (A1-C8, leer=Abbrechen): ").strip().upper()
     if not lbl:
         return False
 
-    if board_robot:
-        if lbl not in board_robot:
-            logger.warning(
-                "Unbekanntes Label '%s'. Verfuegbare Labels: %s",
-                lbl,
-                ", ".join(sorted(board_robot.keys())),
-            )
-            return False
-        x, y = board_robot[lbl]
-        logger.info("Fahre zu %s → Roboter=(%.1f, %.1f, %.1f)", lbl, x, y, SAFE_Z)
-        controller.move_to(x, y, SAFE_Z)
-        return True
-
-    if H is None or not board_pixels:
-        logger.error("Keine Brett-Kalibrierung verfuegbar. Bitte Kalibrierung ausfuehren.")
-        return False
-    if lbl not in board_pixels:
+    if lbl not in board_robot:
         logger.warning(
             "Unbekanntes Label '%s'. Verfuegbare Labels: %s",
             lbl,
-            ", ".join(sorted(board_pixels.keys())),
+            ", ".join(sorted(board_robot.keys())),
         )
         return False
 
-    u, v = board_pixels[lbl]
-    x, y = img_to_robot(H, u, v)
-    logger.info("Fahre zu %s → Pixel=(%.1f, %.1f) → Roboter=(%.1f, %.1f, %.1f)", lbl, u, v, x, y, SAFE_Z)
+    x, y = board_robot[lbl]
+    logger.info("Fahre zu %s → Roboter=(%.1f, %.1f, %.1f)", lbl, x, y, SAFE_Z)
     controller.move_to(x, y, SAFE_Z)
     return True
 
 
 def main(port: str | None = UARM_PORT) -> None:
-    H, board_pixels = load_homography()
     board_robot = get_mill_uarm_positions()
 
     controller = UArmController(port=port, do_connect=True, callback_thread_pool_size=UARM_CALLBACK_THREADS)
@@ -186,7 +133,7 @@ def main(port: str | None = UARM_PORT) -> None:
                     continue
 
                 if cmd == "p":
-                    moved = handle_board_move(board_robot, H, board_pixels, controller)
+                    moved = handle_board_move(board_robot, controller)
                     if moved:
                         last_z_position = SAFE_Z
                         stored_prev_z = last_z_position

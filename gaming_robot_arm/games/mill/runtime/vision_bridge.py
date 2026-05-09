@@ -9,12 +9,17 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 import cv2
 import numpy as np
 
-from gaming_robot_arm.config import CAMERA_INDEX
+try:
+    import msvcrt  # type: ignore[import-not-found]
+except ImportError:
+    msvcrt = None  # nicht-Windows: Vision-Tastatur-Hook ist deaktiviert
+
+from gaming_robot_arm.config import CAMERA_INDEX, RECALIBRATE_SIGNAL_PATH
 from gaming_robot_arm.games.common.interfaces import Move, Player
 from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
 from gaming_robot_arm.games.mill.core.rules import MillRules
 from gaming_robot_arm.games.mill.core.state import MillState
-from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.logger import logger
 
 if TYPE_CHECKING:
     from gaming_robot_arm.vision.figure_detector import BoardCoordSource
@@ -413,6 +418,16 @@ class MillVisionBridge:
         emit_status("Vision kalibriert / warte auf ruhiges Brett")
 
         while True:
+            if RECALIBRATE_SIGNAL_PATH.exists():
+                try:
+                    RECALIBRATE_SIGNAL_PATH.unlink()
+                except OSError:
+                    pass
+                return AutoMoveResult(move=None, reason="recalibrate_requested")
+
+            if _check_undo_keypress():
+                return AutoMoveResult(move=None, reason="undo_requested")
+
             now = perf_counter()
             if trigger.state == "acquiring_baseline":
                 if now > baseline_deadline:
@@ -455,6 +470,25 @@ class MillVisionBridge:
 
             if move is not None:
                 return AutoMoveResult(move=move, reason="ok")
+
+
+def _check_undo_keypress() -> bool:
+    """Liefert True wenn aktuell die Taste 'z' nicht-blockierend gedrueckt wurde.
+
+    Auf nicht-Windows-Systemen (msvcrt nicht verfuegbar) immer False.
+    """
+    if msvcrt is None:
+        return False
+    pressed = False
+    try:
+        while msvcrt.kbhit():
+            ch = msvcrt.getwch()
+            if ch and ch.lower() in ("z", "ü"):
+                pressed = True
+            # andere Tasten verwerfen
+    except Exception:
+        return False
+    return pressed
 
 
 def infer_moves_from_observation(

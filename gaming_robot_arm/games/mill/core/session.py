@@ -40,6 +40,29 @@ class MillGameSession:
         self.move_history.append(move)
         return self.state
 
+    def undo_last_move(self) -> Move | None:
+        """Nimmt den letzten Halbzug zurueck. Gibt den entfernten Zug zurueck (oder None bei leerer History)."""
+        if not self.move_history:
+            return None
+        popped = self.move_history.pop()
+        self._replay_from_history()
+        return popped
+
+    def undo_n_moves(self, n: int) -> list[Move]:
+        """Nimmt bis zu n Halbzuege zurueck. Rueckgabe in Pop-Reihenfolge (juengster zuerst)."""
+        popped: list[Move] = []
+        for _ in range(n):
+            if not self.move_history:
+                break
+            popped.append(self.move_history.pop())
+        self._replay_from_history()
+        return popped
+
+    def _replay_from_history(self) -> None:
+        self.state = self.rules.initial_state()
+        for mv in self.move_history:
+            self.state = self.rules.apply_move(self.state, mv)
+
     def choose_ai_move(self, provider: MillMoveProvider) -> Move:
         return provider.choose_move(self.state, self.rules, self.move_history)
 

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from contextlib import ExitStack
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
 from gaming_robot_arm.config import (
+    AUTOSAVE_PATH,
     CAMERA_INDEX,
     UARM_PORT,
 )
@@ -16,6 +20,7 @@ from gaming_robot_arm.games.mill import (
     MillRuleSettings,
     MillRules,
 )
+from gaming_robot_arm.games.mill.core.state import MillState
 from gaming_robot_arm.games.mill.core.rules import phase_for_player
 from gaming_robot_arm.games.mill.core.settings import (
     MILL_ENABLE_FLYING,
@@ -23,7 +28,7 @@ from gaming_robot_arm.games.mill.core.settings import (
     MILL_ENABLE_THREEFOLD_REPETITION,
     MILL_NO_CAPTURE_DRAW_PLIES,
 )
-from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.logger import logger
 from .players import (
     AI_BACKENDS,
     GAME_MODES,
@@ -49,6 +54,7 @@ from .vision_bridge import (
     infer_moves_from_observation,
 )
 from .voice_bridge import VoiceBridge
+from .signals import UndoSignal
 
 if TYPE_CHECKING:
     from gaming_robot_arm.vision.recording import RecordingSession
@@ -232,6 +238,22 @@ def add_mill_cli_arguments(parser: argparse.ArgumentParser) -> None:
         help="Quelle der Roboter-Brettkoordinaten: feste Standardwerte oder Homography-Projektion.",
     )
 
+    resume_group = parser.add_argument_group("Resume settings")
+    resume_group.add_argument(
+        "--resume",
+        dest="mill_resume",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Setzt das Spiel vom letzten gespeicherten Spielstand fort (falls vorhanden).",
+    )
+    resume_group.add_argument(
+        "--restore-board",
+        dest="mill_restore_board",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Laesst den uArm den physischen Spielstand wiederherstellen (Figuren aus Reserve auf Felder). Erfordert --resume.",
+    )
+
 
 def _format_move(move: Move) -> str:
     src = move.src if move.src is not None else "VORRAT"
@@ -343,19 +365,23 @@ def _format_board(board: dict[str, Player | None]) -> str:
     return "\n".join("".join(row).rstrip() for row in canvas)
 
 
-def _prompt_human_move(legal_moves: Sequence[Move]) -> Move:
+def _prompt_human_move(legal_moves: Sequence[Move]) -> "Move | UndoSignal":
     print("Legale Zuege:")
     for idx, move in enumerate(legal_moves, start=1):
         print(f"  [{idx:02d}] {_format_move(move)}")
 
     while True:
-        raw = _read_user_input("Zugnummer waehlen (oder 'q' zum Abbrechen): ").strip().lower()
+        raw = _read_user_input(
+            "Zugnummer waehlen, 'z' fuer Zurueck, oder 'q' zum Abbrechen: "
+        ).strip().lower()
         if raw == "q":
             raise KeyboardInterrupt
+        if raw in ("z", "zurueck", "zurück", "undo"):
+            return UndoSignal()
         try:
             choice = int(raw)
         except ValueError:
-            print("Bitte eine numerische Zugnummer eingeben.")
+            print("Bitte eine numerische Zugnummer, 'z' oder 'q' eingeben.")
             continue
         if 1 <= choice <= len(legal_moves):
             return legal_moves[choice - 1]
@@ -418,32 +444,49 @@ def _choose_human_move(
     vision_session: RecordingSession | _LiveVisionSession | None = None,
     vision_trigger: VisionTriggerMode = "auto",
     baseline_timeout_disabled: bool = False,
-) -> Move:
+) -> "Move | UndoSignal":
     legal_moves = list(session.legal_moves())
     if not legal_moves:
         raise RuntimeError("Keine legalen Zuege fuer den menschlichen Zug verfuegbar.")
 
     if controller.input_mode == "voice" and voice_bridge is not None:
-        move = voice_bridge.listen_for_move(legal_moves)
-        if move is not None:
-            return move
+        result = voice_bridge.listen_for_move(legal_moves)
+        if isinstance(result, UndoSignal):
+            return result
+        if result is not None:
+            return result
         print("Spracherkennung abgelaufen, wechsle auf manuelle Eingabe.")
 
     if controller.input_mode == "vision" and vision_bridge is not None:
         if vision_trigger == "auto":
             baseline_timeout_s = float("inf") if baseline_timeout_disabled else AUTO_BASELINE_TIMEOUT_S
-            result = vision_bridge.observe_move_automatically(
-                rules=session.rules,
-                state=session.state,
-                legal_moves=legal_moves,
-                session=vision_session,
-                status_callback=print,
-                baseline_timeout_s=baseline_timeout_s,
-            )
-            if result.move is not None:
-                logger.info("Vision hat Zug erkannt: %s", _format_move(result.move))
-                print(f"Vision hat Zug erkannt: {_format_move(result.move)}")
-                return result.move
+            while True:
+                result = vision_bridge.observe_move_automatically(
+                    rules=session.rules,
+                    state=session.state,
+                    legal_moves=legal_moves,
+                    session=vision_session,
+                    status_callback=print,
+                    baseline_timeout_s=baseline_timeout_s,
+                )
+                if result.move is not None:
+                    logger.info("Vision hat Zug erkannt: %s", _format_move(result.move))
+                    print(f"Vision hat Zug erkannt: {_format_move(result.move)}")
+                    return result.move
+                if result.reason == "recalibrate_requested":
+                    print("Neukalibrierung angefordert – Brett wird neu erkannt …")
+                    try:
+                        vision_bridge.calibrate_temporary_board_pixels(
+                            session=vision_session,
+                            attempts=5,
+                        )
+                        print("Neukalibrierung abgeschlossen.")
+                    except Exception as exc:
+                        print(f"Neukalibrierung fehlgeschlagen: {exc}")
+                    continue
+                if result.reason == "undo_requested":
+                    return UndoSignal()
+                break
 
             logger.warning(
                 "Automatische Vision-Zugerkennung fehlgeschlagen (%s); falle auf manuellen Scan zurueck.",
@@ -473,6 +516,30 @@ def _choose_human_move(
     return _prompt_human_move(legal_moves)
 
 
+def _decide_undo_count(
+    session: MillGameSession,
+    controllers: dict[Player, PlayerController],
+) -> int:
+    """Bestimmt, wie viele Halbzuege bei einem Undo-Request entfernt werden.
+
+    - Keine History -> 0
+    - Zwei Menschen -> stets 1
+    - Mensch vs. KI: Wenn der letzte Halbzug von der KI war und davor ein
+      menschlicher Halbzug -> 2 (KI- und Mensch-Halbzug). Sonst 1.
+    """
+    if not session.move_history:
+        return 0
+    if all(c.kind == "human" for c in controllers.values()):
+        return 1
+    last = session.move_history[-1]
+    last_controller = controllers[last.player]
+    if last_controller.kind == "ai" and len(session.move_history) >= 2:
+        prev = session.move_history[-2]
+        if controllers[prev.player].kind == "human":
+            return 2
+    return 1
+
+
 def _print_turn_header(session: MillGameSession) -> None:
     state = session.state
     white_pieces = sum(1 for owner in state.board.values() if owner == "W")
@@ -487,6 +554,58 @@ def _print_turn_header(session: MillGameSession) -> None:
     print(_format_board(state.board))
 
 
+def _state_to_dict(state: MillState) -> dict:
+    return {
+        "board": state.board,
+        "to_move": state.to_move,
+        "placed": state.placed,
+        "plies_without_capture": state.plies_without_capture,
+        "position_history": list(state.position_history),
+    }
+
+
+def _dict_to_state(d: dict) -> MillState:
+    return MillState(
+        board=d["board"],
+        to_move=d["to_move"],
+        placed=d["placed"],
+        plies_without_capture=d["plies_without_capture"],
+        position_history=tuple(d["position_history"]),
+    )
+
+
+def _move_to_dict(move: Move) -> dict:
+    return {"player": move.player, "src": move.src, "dst": move.dst, "capture": move.capture}
+
+
+def _dict_to_move(d: dict) -> Move:
+    return Move(player=d["player"], src=d.get("src"), dst=d["dst"], capture=d.get("capture"))
+
+
+def _save_progress(path: Path, session: MillGameSession) -> None:
+    try:
+        payload = {
+            "version": 1,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "ply": len(session.move_history),
+            "state": _state_to_dict(session.state),
+            "move_history": [_move_to_dict(m) for m in session.move_history],
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Autosave fehlgeschlagen (%s); Spiel laeuft weiter.", exc)
+
+
+def _load_progress(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Autosave konnte nicht geladen werden (%s); starte neu.", exc)
+        return None
+
+
 def run_mill_game(args: argparse.Namespace) -> int:
     settings = MillRuleSettings(
         enable_flying=args.mill_flying,
@@ -496,6 +615,16 @@ def run_mill_game(args: argparse.Namespace) -> int:
     )
     rules = MillRules(settings=settings)
     session = MillGameSession(rules=rules)
+
+    if getattr(args, "mill_resume", False):
+        data = _load_progress(AUTOSAVE_PATH)
+        if data is not None:
+            session.state = _dict_to_state(data["state"])
+            session.move_history = [_dict_to_move(m) for m in data["move_history"]]
+            print(f"Spielstand wiederhergestellt (Halbzug {len(session.move_history)}, am Zug: {session.state.to_move}).")
+        else:
+            print("Kein Autosave gefunden; starte neues Spiel.")
+
     controllers = build_player_controllers(args)
     ai_player_present = any(ctrl.kind == "ai" for ctrl in controllers.values())
     physical_board_mode = any(ctrl.kind == "human" and ctrl.input_mode == "vision" for ctrl in controllers.values())
@@ -529,6 +658,13 @@ def run_mill_game(args: argparse.Namespace) -> int:
                 move_speed=args.mill_robot_speed,
             )
             robot_bridge.connect()
+            if getattr(args, "mill_restore_board", False) and getattr(args, "mill_resume", False):
+                print("Stelle physischen Spielstand via uArm wieder her...")
+                try:
+                    robot_bridge.restore_board_state(session.state)
+                    print("Spielbrett physisch wiederhergestellt.")
+                except Exception as exc:
+                    logger.warning("Physische Spielstand-Wiederherstellung fehlgeschlagen (%s); fahre fort.", exc)
         except Exception as exc:
             logger.warning("Roboter-Bridge nicht verfuegbar (%s); fahre ohne Roboterausfuehrung fort.", exc)
             robot_bridge = None
@@ -606,7 +742,7 @@ def run_mill_game(args: argparse.Namespace) -> int:
                     move = session.choose_ai_move(provider)
                     print(f"{controller.label} waehlt {_format_move(move)}")
                 else:
-                    move = _choose_human_move(
+                    result = _choose_human_move(
                         session=session,
                         controller=controller,
                         vision_bridge=vision_bridge,
@@ -615,10 +751,33 @@ def run_mill_game(args: argparse.Namespace) -> int:
                         vision_trigger=args.mill_vision_trigger,
                         baseline_timeout_disabled=bool(args.mill_baseline_timeout_disabled),
                     )
+                    if isinstance(result, UndoSignal):
+                        n = _decide_undo_count(session, controllers)
+                        if n == 0:
+                            print("Kein Zug zum Zuruecknehmen vorhanden.")
+                            continue
+                        popped = session.undo_n_moves(n)
+                        for mv in popped:
+                            if robot_bridge is not None and mv.player in robot_controlled_players:
+                                ok = robot_bridge.reverse_move(mv, player=mv.player)
+                                if not ok:
+                                    print(
+                                        f"Achtung: physische Umkehr von {_format_move(mv)} fehlgeschlagen."
+                                    )
+                            else:
+                                print(
+                                    f"Bitte Stein {mv.player} manuell zuruecksetzen "
+                                    f"(rueckwaerts: {_format_move(mv)})."
+                                )
+                        _save_progress(AUTOSAVE_PATH, session)
+                        print(f"{n} Halbzug/Halbzuege zurueckgenommen.")
+                        continue
+                    move = result
                     print(f"{controller.label} waehlt {_format_move(move)}")
 
                 _record_single_frame(game_recording)
                 session.apply_move(move)
+                _save_progress(AUTOSAVE_PATH, session)
 
                 if robot_bridge is not None and player in robot_controlled_players:
                     executed = robot_bridge.execute_move(move, player=player)
@@ -639,6 +798,23 @@ def run_mill_game(args: argparse.Namespace) -> int:
                     print(f"Ergebnis: remis ({draw_reason})")
                 else:
                     print(f"Ergebnis: Sieger = {winner}")
+
+                if robot_bridge is not None:
+                    if winner is None:
+                        _outcome = "draw"
+                    elif winner in robot_controlled_players:
+                        _outcome = "win"
+                    else:
+                        _outcome = "loss"
+                    print("Roboter-Animation...")
+                    robot_bridge.perform_game_end_animation(_outcome)
+                    print("Brett aufräumen...")
+                    robot_bridge.cleanup_board(session.state)
+
+                try:
+                    AUTOSAVE_PATH.unlink(missing_ok=True)
+                except Exception:
+                    pass
             elif args.mill_max_plies > 0:
                 print(f"Ergebnis: nach {args.mill_max_plies} Halbzuegen gestoppt (nicht-terminaler Zustand).")
 

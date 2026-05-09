@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSplitter,
     QStackedWidget,
     QSizePolicy,
@@ -41,6 +42,13 @@ try:
     import cv2
 except ModuleNotFoundError:  # pragma: no cover - optionaler Laufzeitpfad
     cv2 = None
+
+
+class _NoWheelSlider(QSlider):
+    """QSlider, der Mausrad-Events an den Scroll-Container weiterreicht statt sie zu konsumieren."""
+
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 class LauncherWindow(QMainWindow):
@@ -64,6 +72,7 @@ class LauncherWindow(QMainWindow):
         self._start_button: QPushButton | None = None
         self._stop_button: QPushButton | None = None
         self._quick_start_button: QPushButton | None = None
+        self._recalibrate_button: QPushButton | None = None
         self._runtime_back_button: QPushButton | None = None
         self._send_button: QPushButton | None = None
         self._left_pages: QStackedWidget | None = None
@@ -77,6 +86,13 @@ class LauncherWindow(QMainWindow):
         self._command_box: QGroupBox | None = None
         self._input_box: QGroupBox | None = None
         self._log_box: QGroupBox | None = None
+        self._tuning_box: QGroupBox | None = None
+        self._tuning_stack: QStackedWidget | None = None
+        self._dev_vertical_splitter: QSplitter | None = None
+        self._figure_param_widgets: dict[str, tuple[QSlider, QLabel, float]] = {}
+        self._board_param_widgets: dict[str, tuple[QSlider, QLabel, float]] = {}
+        self._live_figure_params: dict[str, int | float] = {}
+        self._live_board_params: dict[str, int | float] = {}
         self._camera_preview_label: QLabel | None = None
         self._camera_preview_overlay_combo: QComboBox | None = None
         self._camera_preview_timer: QTimer | None = None
@@ -93,6 +109,8 @@ class LauncherWindow(QMainWindow):
         self._stop_requested = False
         self._stop_force_killed = False
         self._stop_request_id = 0
+        self._resume_info_label: QLabel | None = None
+        self._resume_game_button: QPushButton | None = None
 
         self._setup_process()
         self._build_ui()
@@ -215,6 +233,11 @@ class LauncherWindow(QMainWindow):
         play_btn = QPushButton("Spiel Starten")
         play_btn.setObjectName("MenuPrimaryButton")
         play_btn.clicked.connect(self._show_launch_screen)
+        resume_btn = QPushButton("Spiel fortsetzen")
+        resume_btn.setObjectName("MenuSecondaryButton")
+        resume_btn.setEnabled(False)
+        resume_btn.clicked.connect(self._resume_game_from_home)
+        self._resume_game_button = resume_btn
         settings_btn = QPushButton("Einstellungen")
         settings_btn.setObjectName("MenuSecondaryButton")
         settings_btn.clicked.connect(self._show_settings_screen)
@@ -226,6 +249,7 @@ class LauncherWindow(QMainWindow):
         exit_btn.clicked.connect(self.close)
 
         menu_layout.addWidget(play_btn)
+        menu_layout.addWidget(resume_btn)
         menu_layout.addWidget(settings_btn)
         menu_layout.addWidget(dev_btn)
         menu_layout.addWidget(exit_btn)
@@ -395,6 +419,30 @@ class LauncherWindow(QMainWindow):
                 ("Sprache", "voice"),
             ],
         )
+
+        resume_box = self._group_box("Spiel fortsetzen")
+        resume_layout = QVBoxLayout(resume_box)
+        resume_layout.setContentsMargins(12, 14, 12, 12)
+        resume_layout.setSpacing(6)
+
+        self._resume_info_label = QLabel("Kein Spielstand vorhanden.")
+        self._resume_info_label.setObjectName("MutedText")
+        resume_layout.addWidget(self._resume_info_label)
+
+        resume_check = QCheckBox("Letzten Spielstand laden")
+        resume_check.setEnabled(False)
+        resume_check.toggled.connect(self._on_form_change)
+        resume_check.toggled.connect(self._refresh_resume_info)
+        self._widgets["mill_resume_game"] = resume_check
+        resume_layout.addWidget(resume_check)
+
+        restore_check = QCheckBox("Spielbrett physisch wiederherstellen (uArm)")
+        restore_check.setEnabled(False)
+        restore_check.toggled.connect(self._on_form_change)
+        self._widgets["mill_restore_board_via_robot"] = restore_check
+        resume_layout.addWidget(restore_check)
+
+        layout.addWidget(resume_box)
 
         start_row = QHBoxLayout()
         start_row.setSpacing(0)
@@ -820,6 +868,10 @@ class LauncherWindow(QMainWindow):
         self._status_row_frame = status_frame
         layout.addWidget(status_frame)
 
+        vertical_splitter = QSplitter(Qt.Orientation.Vertical)
+        vertical_splitter.setChildrenCollapsible(False)
+        self._dev_vertical_splitter = vertical_splitter
+
         camera_box = self._group_box("Kameravorschau")
         self._camera_box = camera_box
         camera_layout = QVBoxLayout(camera_box)
@@ -852,7 +904,13 @@ class LauncherWindow(QMainWindow):
         camera_placeholder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         camera_layout.addWidget(camera_placeholder)
         self._camera_preview_label = camera_placeholder
-        layout.addWidget(camera_box, 2)
+        vertical_splitter.addWidget(camera_box)
+
+        scroll_inner = QWidget()
+        scroll_inner.setObjectName("DevPanelScrollContent")
+        scroll_inner_layout = QVBoxLayout(scroll_inner)
+        scroll_inner_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_inner_layout.setSpacing(10)
 
         command_box = self._group_box("Befehlsvorschau (Spielstart)")
         self._command_box = command_box
@@ -864,7 +922,10 @@ class LauncherWindow(QMainWindow):
         self._command_preview.setFixedHeight(96)
         self._command_preview.setFont(self._mono_font())
         command_layout.addWidget(self._command_preview)
-        layout.addWidget(command_box)
+        scroll_inner_layout.addWidget(command_box)
+
+        tuning_box = self._build_tuning_panel()
+        scroll_inner_layout.addWidget(tuning_box)
 
         input_box = self._group_box("Prozess-Eingabe")
         self._input_box = input_box
@@ -892,7 +953,7 @@ class LauncherWindow(QMainWindow):
         input_row.addWidget(self._send_button)
         input_row.addWidget(send_empty_btn)
         input_layout.addLayout(input_row)
-        layout.addWidget(input_box)
+        scroll_inner_layout.addWidget(input_box)
 
         log_box = self._group_box("Live-Ausgabe")
         self._log_box = log_box
@@ -913,6 +974,10 @@ class LauncherWindow(QMainWindow):
         quick_stop.setObjectName("DangerButton")
         quick_stop.clicked.connect(self._stop_process)
         self._stop_button = quick_stop
+        recalibrate_btn = QPushButton("Neu kalibrieren")
+        recalibrate_btn.setToolTip("Board-Erkennung und Homography neu kalibrieren (nur im Vision-Modus).")
+        recalibrate_btn.clicked.connect(self._request_recalibration)
+        self._recalibrate_button = recalibrate_btn
         quick_start = QPushButton("Start")
         quick_start.setObjectName("PrimaryButton")
         quick_start.clicked.connect(self._start_process)
@@ -922,6 +987,7 @@ class LauncherWindow(QMainWindow):
         toolbar.addWidget(save_btn)
         toolbar.addWidget(back_btn)
         toolbar.addStretch(1)
+        toolbar.addWidget(recalibrate_btn)
         toolbar.addWidget(quick_stop)
         toolbar.addWidget(quick_start)
         log_layout.addLayout(toolbar)
@@ -931,8 +997,287 @@ class LauncherWindow(QMainWindow):
         self._log_output.setObjectName("LogOutput")
         self._log_output.setFont(self._mono_font())
         self._log_output.document().setMaximumBlockCount(6000)
+        self._log_output.setMinimumHeight(160)
         log_layout.addWidget(self._log_output, 1)
-        layout.addWidget(log_box, 1)
+        scroll_inner_layout.addWidget(log_box, 1)
+
+        scroll_area = QScrollArea()
+        scroll_area.setObjectName("DevPanelScrollArea")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.viewport().setObjectName("DevPanelScrollViewport")
+        scroll_area.setWidget(scroll_inner)
+        vertical_splitter.addWidget(scroll_area)
+
+        vertical_splitter.setStretchFactor(0, 1)
+        vertical_splitter.setStretchFactor(1, 1)
+        vertical_splitter.setSizes([480, 420])
+        layout.addWidget(vertical_splitter, 1)
+
+    _FIGURE_SLIDER_SPECS: tuple[tuple[str, str, int, int, float], ...] = (
+        ("blur_ksize", "Gauss-Blur (ungerade)", 1, 31, 1.0),
+        ("thresh_block", "Adaptive Schwellwert-Blockgroesse (ungerade)", 3, 121, 1.0),
+        ("thresh_c", "Adaptive Schwellwert-Konstante C", 0, 50, 1.0),
+        ("min_radius", "Min. Kreisradius (px)", 1, 120, 1.0),
+        ("max_radius", "Max. Kreisradius (px)", 1, 200, 1.0),
+        ("hough_dp", "Hough dp (Akkumulator-Aufloesung)", 1, 40, 0.1),
+        ("hough_min_dist", "Hough Mindestabstand (px)", 1, 300, 1.0),
+        ("hough_param1", "Hough param1 (Canny high)", 1, 400, 1.0),
+        ("hough_param2", "Hough param2 (Akkumulatorschwelle)", 1, 200, 1.0),
+        ("brightness_split", "Helligkeitsgrenze schwarz/weiss", 0, 255, 1.0),
+    )
+
+    _BOARD_SLIDER_SPECS: tuple[tuple[str, str, int, int, float], ...] = (
+        ("blur_ksize", "Gauss-Blur (ungerade)", 1, 41, 1.0),
+        ("bw_block", "Adaptive Schwellwert-Blockgroesse (ungerade)", 3, 99, 1.0),
+        ("bw_C", "Adaptive Schwellwert-Konstante C", 0, 30, 1.0),
+        ("bw_open", "Morph. Opening-Kernel", 1, 15, 1.0),
+        ("morph_close", "Morph. Closing-Kernel", 1, 30, 1.0),
+        ("approx_eps_pct", "approxPolyDP Epsilon (% Umfang)", 1, 10, 1.0),
+        ("min_area_pct", "Min. Konturflaeche (% Bild)", 1, 10, 1.0),
+        ("ema_alpha", "EMA-Glaettung (alpha*100)", 1, 100, 1.0),
+    )
+
+    def _build_tuning_panel(self) -> QGroupBox:
+        box = self._group_box("Live-Parameter (Detector-Tuning)")
+        self._tuning_box = box
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(12, 14, 12, 12)
+        box_layout.setSpacing(8)
+
+        stack = QStackedWidget()
+        self._tuning_stack = stack
+
+        raw_page = QWidget()
+        raw_layout = QVBoxLayout(raw_page)
+        raw_layout.setContentsMargins(8, 8, 8, 8)
+        raw_hint = QLabel(
+            "Overlay 'Rohbild' aktiv – waehle 'Board Detector Overlay' oder 'Figure Detector Overlay'"
+            " im Dropdown ueber der Kameravorschau, um Live-Parameter einzublenden."
+        )
+        raw_hint.setWordWrap(True)
+        raw_hint.setObjectName("MutedText")
+        raw_layout.addWidget(raw_hint)
+        raw_layout.addStretch(1)
+        stack.addWidget(raw_page)
+
+        try:
+            from gaming_robot_arm.vision.mill_board_detector import BOARD_LINE_PARAMS
+            self._live_board_params = dict(BOARD_LINE_PARAMS)
+            board_page = self._build_board_tuning_page()
+        except Exception as exc:
+            board_page = self._build_unavailable_tuning_page(
+                f"Board-Detector-Parameter nicht verfuegbar: {exc}"
+            )
+        stack.addWidget(board_page)
+
+        try:
+            from gaming_robot_arm.vision.figure_detector import DEFAULT_FIGURE_PARAMS
+            self._live_figure_params = dict(DEFAULT_FIGURE_PARAMS)
+            figure_page = self._build_figure_tuning_page()
+        except Exception as exc:
+            figure_page = self._build_unavailable_tuning_page(
+                f"Figure-Detector-Parameter nicht verfuegbar: {exc}"
+            )
+        stack.addWidget(figure_page)
+
+        box_layout.addWidget(stack)
+        return box
+
+    def _build_unavailable_tuning_page(self, message: str) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        label = QLabel(message)
+        label.setWordWrap(True)
+        label.setObjectName("MutedText")
+        layout.addWidget(label)
+        layout.addStretch(1)
+        return page
+
+    def _build_board_tuning_page(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        form = QFormLayout()
+        form.setContentsMargins(4, 4, 4, 4)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(6)
+        for key, label_text, min_val, max_val, scale in self._BOARD_SLIDER_SPECS:
+            current = self._live_board_params.get(key, min_val)
+            self._build_param_slider_row(
+                form,
+                key=key,
+                label_text=label_text,
+                min_val=min_val,
+                max_val=max_val,
+                default=current,
+                scale=scale,
+                widgets_dict=self._board_param_widgets,
+                params_dict=self._live_board_params,
+            )
+        outer.addLayout(form)
+
+        save_btn = QPushButton("Board-Parameter in Detector speichern")
+        save_btn.setToolTip(
+            "Schreibt die aktuellen Board-Parameter via write_board_params_to_detector in mill_board_detector.py."
+        )
+        save_btn.clicked.connect(self._save_board_params)
+        outer.addWidget(save_btn)
+        outer.addStretch(1)
+        return page
+
+    def _build_figure_tuning_page(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        form = QFormLayout()
+        form.setContentsMargins(4, 4, 4, 4)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(6)
+        for key, label_text, min_val, max_val, scale in self._FIGURE_SLIDER_SPECS:
+            current = self._live_figure_params.get(key, min_val)
+            self._build_param_slider_row(
+                form,
+                key=key,
+                label_text=label_text,
+                min_val=min_val,
+                max_val=max_val,
+                default=current,
+                scale=scale,
+                widgets_dict=self._figure_param_widgets,
+                params_dict=self._live_figure_params,
+            )
+        outer.addLayout(form)
+
+        save_btn = QPushButton("Figure-Parameter in Detector speichern")
+        save_btn.setToolTip(
+            "Schreibt die aktuellen Figure-Parameter via write_figure_params_to_detector"
+            " in figure_detector_config.json."
+        )
+        save_btn.clicked.connect(self._save_figure_params)
+        outer.addWidget(save_btn)
+        outer.addStretch(1)
+        return page
+
+    def _build_param_slider_row(
+        self,
+        form: QFormLayout,
+        *,
+        key: str,
+        label_text: str,
+        min_val: int,
+        max_val: int,
+        default: int | float,
+        scale: float,
+        widgets_dict: dict[str, tuple[QSlider, QLabel, float]],
+        params_dict: dict[str, int | float],
+    ) -> None:
+        slider = _NoWheelSlider(Qt.Orientation.Horizontal)
+        slider.setMinimum(min_val)
+        slider.setMaximum(max_val)
+        slider.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        if scale != 1.0:
+            slider_default = int(round(float(default) / scale))
+        else:
+            slider_default = int(default)
+        slider_default = max(min_val, min(max_val, slider_default))
+        slider.setValue(slider_default)
+        slider.setSingleStep(1)
+        slider.setPageStep(max(1, (max_val - min_val) // 20))
+
+        value_label = QLabel()
+        value_label.setObjectName("ParamValueLabel")
+        value_label.setMinimumWidth(56)
+        value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        def fmt(slider_val: int) -> str:
+            real = slider_val * scale
+            if scale != 1.0:
+                return f"{real:.1f}"
+            return f"{int(real)}"
+
+        value_label.setText(fmt(slider_default))
+
+        params_dict[key] = slider_default * scale if scale != 1.0 else int(slider_default)
+
+        def on_change(value: int, _key=key, _scale=scale, _label=value_label) -> None:
+            real = value * _scale if _scale != 1.0 else int(value)
+            params_dict[_key] = real
+            _label.setText(fmt(value))
+
+        slider.valueChanged.connect(on_change)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        row_layout.addWidget(slider, 1)
+        row_layout.addWidget(value_label, 0)
+
+        widgets_dict[key] = (slider, value_label, scale)
+        form.addRow(QLabel(label_text), row)
+
+    def _save_figure_params(self) -> None:
+        try:
+            from gaming_robot_arm.vision.figure_detector import (
+                DEFAULT_FIGURE_PARAMS,
+                normalize_figure_params,
+                write_figure_params_to_detector,
+            )
+        except Exception as exc:
+            self._append_log(f"[launcher] Figure-Parameter speichern fehlgeschlagen (Import): {exc}\n")
+            return
+        try:
+            normalized = normalize_figure_params(self._live_figure_params)
+            write_figure_params_to_detector(normalized)
+            DEFAULT_FIGURE_PARAMS.update(normalized)
+            self._live_figure_params.update(normalized)
+            self._sync_param_widgets(self._figure_param_widgets, self._live_figure_params)
+            self._append_log("[launcher] Figure-Parameter in figure_detector_config.json gespeichert.\n")
+        except Exception as exc:
+            self._append_log(f"[launcher] Figure-Parameter speichern fehlgeschlagen: {exc}\n")
+
+    def _save_board_params(self) -> None:
+        try:
+            from gaming_robot_arm.vision.mill_board_detector import (
+                BOARD_LINE_PARAMS,
+                normalize_board_params,
+                write_board_params_to_detector,
+            )
+        except Exception as exc:
+            self._append_log(f"[launcher] Board-Parameter speichern fehlgeschlagen (Import): {exc}\n")
+            return
+        try:
+            normalized = normalize_board_params(self._live_board_params)
+            write_board_params_to_detector(normalized)
+            BOARD_LINE_PARAMS.update(normalized)
+            self._live_board_params.update(normalized)
+            self._sync_param_widgets(self._board_param_widgets, self._live_board_params)
+            self._append_log("[launcher] Board-Parameter in mill_board_detector.py gespeichert.\n")
+        except Exception as exc:
+            self._append_log(f"[launcher] Board-Parameter speichern fehlgeschlagen: {exc}\n")
+
+    def _sync_param_widgets(
+        self,
+        widgets_dict: dict[str, tuple[QSlider, QLabel, float]],
+        params_dict: dict[str, int | float],
+    ) -> None:
+        for key, (slider, label, scale) in widgets_dict.items():
+            if key not in params_dict:
+                continue
+            real = float(params_dict[key])
+            slider_val = int(round(real / scale)) if scale != 1.0 else int(real)
+            slider_val = max(slider.minimum(), min(slider.maximum(), slider_val))
+            blocker = slider.blockSignals(True)
+            slider.setValue(slider_val)
+            slider.blockSignals(blocker)
+            label.setText(f"{real:.1f}" if scale != 1.0 else f"{int(real)}")
 
     def _runtime_requires_stdin(self) -> bool:
         if self._current_mode() != "play-mill":
@@ -945,6 +1290,26 @@ class LauncherWindow(QMainWindow):
         mill_mode = mode_widget.currentText().strip()
         has_human_player = "human" in mill_mode
         return has_human_player and human_input in {"manual", "vision"}
+
+    def _runtime_uses_vision(self) -> bool:
+        if self._current_mode() != "play-mill":
+            return False
+        input_widget = self._widgets.get("mill_human_input")
+        mode_widget = self._widgets.get("mill_mode")
+        if not isinstance(input_widget, QComboBox) or not isinstance(mode_widget, QComboBox):
+            return False
+        has_human_player = "human" in mode_widget.currentText().strip()
+        return has_human_player and input_widget.currentText().strip() == "vision"
+
+    def _request_recalibration(self) -> None:
+        if not self._is_process_running():
+            return
+        try:
+            from gaming_robot_arm.config import RECALIBRATE_SIGNAL_PATH
+            RECALIBRATE_SIGNAL_PATH.touch()
+            self._append_log("[launcher] Neukalibrierung angefordert.\n")
+        except Exception as exc:
+            self._append_log(f"[launcher] Neukalibrierung konnte nicht angefordert werden: {exc}\n")
 
     def _set_runtime_output_only(self, active: bool) -> None:
         self._runtime_output_only_active = active
@@ -967,6 +1332,8 @@ class LauncherWindow(QMainWindow):
             self._camera_box.setVisible(show_detail_sections)
         if self._command_box is not None:
             self._command_box.setVisible(show_detail_sections)
+        if self._tuning_box is not None:
+            self._tuning_box.setVisible(show_detail_sections)
         if self._input_box is not None:
             self._input_box.setVisible(show_input_section)
         if self._runtime_back_button is not None:
@@ -994,6 +1361,55 @@ class LauncherWindow(QMainWindow):
         if self._left_pages is not None:
             self._left_pages.setCurrentIndex(0)
         self._set_dev_panel_visible(False)
+        self._refresh_resume_info()
+
+    def _resume_game_from_home(self) -> None:
+        resume_widget = self._widgets.get("mill_resume_game")
+        if isinstance(resume_widget, QCheckBox):
+            self._suppress_form_updates = True
+            resume_widget.setChecked(True)
+            self._suppress_form_updates = False
+        self._show_launch_screen()
+
+    def _refresh_resume_info(self) -> None:
+        if self._suppress_form_updates:
+            return
+        import json as _json
+        autosave_path = self.project_root / ".mill_autosave.json"
+        data: dict | None = None
+        if autosave_path.exists():
+            try:
+                data = _json.loads(autosave_path.read_text(encoding="utf-8"))
+            except Exception:
+                data = None
+
+        has_save = data is not None
+        if self._resume_info_label is not None:
+            if has_save:
+                ply = data.get("ply", "?")
+                to_move = data.get("state", {}).get("to_move", "?")
+                saved_at = data.get("saved_at", "")
+                self._resume_info_label.setText(
+                    f"Halbzug {ply} | am Zug: {to_move} | gespeichert: {saved_at}"
+                )
+            else:
+                self._resume_info_label.setText("Kein Spielstand vorhanden.")
+
+        resume_widget = self._widgets.get("mill_resume_game")
+        if resume_widget is not None:
+            resume_widget.setEnabled(has_save)
+            if not has_save and isinstance(resume_widget, QCheckBox):
+                resume_widget.setChecked(False)
+
+        restore_widget = self._widgets.get("mill_restore_board_via_robot")
+        if restore_widget is not None:
+            resume_checked = has_save and isinstance(resume_widget, QCheckBox) and resume_widget.isChecked()
+            restore_widget.setEnabled(resume_checked)
+            if not resume_checked and isinstance(restore_widget, QCheckBox):
+                restore_widget.setChecked(False)
+
+        if self._resume_game_button is not None:
+            self._resume_game_button.setEnabled(has_save)
 
     def _show_launch_screen(self) -> None:
         self._set_mode("play-mill")
@@ -1001,6 +1417,7 @@ class LauncherWindow(QMainWindow):
         if self._left_pages is not None:
             self._left_pages.setCurrentIndex(1)
         self._set_dev_panel_visible(False)
+        self._refresh_resume_info()
         self._refresh_context()
         self._refresh_command_preview()
 
@@ -1062,8 +1479,16 @@ class LauncherWindow(QMainWindow):
         self._camera_overlay_error_key = None
         self._figure_stabilizer = None
         self._figure_stabilizer_labels = []
+        self._sync_tuning_stack_to_overlay()
         if self._camera_preview_enabled():
             self._update_camera_preview_frame()
+
+    def _sync_tuning_stack_to_overlay(self) -> None:
+        if self._tuning_stack is None:
+            return
+        mode = self._camera_preview_overlay_mode()
+        index = {"raw": 0, "board": 1, "figure": 2}.get(mode, 0)
+        self._tuning_stack.setCurrentIndex(index)
 
     def _set_camera_preview_message(self, text: str) -> None:
         label = self._camera_preview_label
@@ -1096,14 +1521,38 @@ class LauncherWindow(QMainWindow):
         self._figure_overlay_detector = detector
         return detector
 
+    def _normalized_board_params(self) -> dict[str, int | float] | None:
+        if not self._live_board_params:
+            return None
+        try:
+            from gaming_robot_arm.vision.mill_board_detector import normalize_board_params
+            return normalize_board_params(self._live_board_params)
+        except Exception:
+            return None
+
+    def _normalized_figure_params(self) -> dict[str, int | float] | None:
+        if not self._live_figure_params:
+            return None
+        try:
+            from gaming_robot_arm.vision.figure_detector import normalize_figure_params
+            return normalize_figure_params(self._live_figure_params)
+        except Exception:
+            return None
+
     def _camera_preview_board_coords(self, frame) -> dict[str, tuple[int, int]] | None:
         cached = self._camera_figure_board_coords_cache.get(True)
         if cached is not None:
             return cached
         try:
-            from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
+            from gaming_robot_arm.vision.mill_board_detector import (
+                detect_board_positions,
+                normalize_board_params,
+            )
             from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
-            positions, _ = detect_board_positions(frame, debug=False, return_bw=False)
+            board_params = normalize_board_params(self._live_board_params) if self._live_board_params else None
+            positions, _ = detect_board_positions(
+                frame, debug=False, return_bw=False, params=board_params
+            )
             if len(positions) != len(BOARD_LABELS):
                 return None
             labeled = {lbl: (int(x), int(y)) for lbl, (x, y) in zip(BOARD_LABELS, positions)}
@@ -1122,7 +1571,10 @@ class LauncherWindow(QMainWindow):
 
         if mode == "board":
             detect_board_positions = self._load_board_overlay_detector()
-            board_result = detect_board_positions(frame, debug=False, return_bw=False)
+            board_params = self._normalized_board_params()
+            board_result = detect_board_positions(
+                frame, debug=False, return_bw=False, params=board_params
+            )
             annotated = board_result[1]
             return annotated
 
@@ -1131,12 +1583,14 @@ class LauncherWindow(QMainWindow):
             annotated_input = frame.copy()
             board_coords = self._camera_preview_board_coords(annotated_input)
             labels_order = sorted(board_coords.keys()) if board_coords else None
+            figure_params = self._normalized_figure_params()
             result = detect_figures(
                 annotated_input,
                 board_coords=board_coords,
                 labels_order=labels_order,
                 draw_assignments=bool(board_coords),
                 return_assignments=True,
+                params=figure_params,
             )
             if isinstance(result, tuple) and len(result) > 0:
                 annotated = result[0]
@@ -1507,6 +1961,19 @@ class LauncherWindow(QMainWindow):
             QWidget#TabScrollViewport {
                 background: #ffffff;
             }
+            QScrollArea#DevPanelScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QWidget#DevPanelScrollViewport,
+            QWidget#DevPanelScrollContent {
+                background: #ffffff;
+            }
+            QLabel#ParamValueLabel {
+                color: #0f172a;
+                font-weight: 600;
+                padding-right: 4px;
+            }
             QTabWidget::pane {
                 border: none;
                 background: #ffffff;
@@ -1794,6 +2261,8 @@ class LauncherWindow(QMainWindow):
             "mill_vision_preview",
             "mill_uarm_enable_ai_moves",
             "mill_uarm_move_both_players",
+            "mill_resume_game",
+            "mill_restore_board_via_robot",
         }
         int_keys = {
             "camera_index",
@@ -2114,6 +2583,8 @@ class LauncherWindow(QMainWindow):
             self._send_button.setEnabled(running)
         if self._stdin_input is not None:
             self._stdin_input.setEnabled(running)
+        if self._recalibrate_button is not None:
+            self._recalibrate_button.setEnabled(running and self._runtime_uses_vision())
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt API)
         if self._is_process_running() and self._process is not None:

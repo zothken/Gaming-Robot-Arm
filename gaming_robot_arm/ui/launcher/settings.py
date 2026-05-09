@@ -49,6 +49,9 @@ class LauncherSettings:
     mill_robot_speed: int = 500
     mill_robot_board_map: str = "default"
 
+    mill_resume_game: bool = False
+    mill_restore_board_via_robot: bool = False
+
     @classmethod
     def from_payload(cls, payload: object) -> "LauncherSettings":
         base = asdict(cls())

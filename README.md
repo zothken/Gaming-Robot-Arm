@@ -14,8 +14,8 @@ Kamera
   -> gaming_robot_arm.control.UArmController (uArm Swift API)
 
 Kalibrierung:
-  gaming_robot_arm.vision.mill_board_detector -> gaming_robot_arm.calibration.live_calibration -> gaming_robot_arm/calibration/*.json
-  gaming_robot_arm.utils.homography (img_to_robot) nutzt die gespeicherte Homography
+  gaming_robot_arm.vision.mill_board_detector -> gaming_robot_arm.calibration.live_calibration (fit_homography_from_correspondences)
+  gaming_robot_arm.games.mill.runtime.robot_bridge.img_to_robot wandelt Pixel -> Roboter-XY
 
 Spielbare Muehle:
   games/mill/runtime/game_loop.py

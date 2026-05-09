@@ -95,6 +95,12 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
     add_bool("uarm-move-both-players", bool(settings.mill_uarm_move_both_players))
     cmd.extend(["--robot-speed", str(_as_int(settings.mill_robot_speed, "Robotergeschwindigkeit", minimum=1))])
     cmd.extend(["--robot-board-map", robot_board_map])
+
+    if bool(settings.mill_resume_game):
+        cmd.append("--resume")
+        if bool(settings.mill_restore_board_via_robot):
+            cmd.append("--restore-board")
+
     return cmd
 
 

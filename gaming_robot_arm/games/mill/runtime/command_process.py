@@ -77,9 +77,40 @@ class CommandProcess:
                 found.append(match)
         return found if found else None
 
+    def find_undo(self, full_sentence: str) -> bool:
+        """Erkennt Undo-Schluesselwoerter ueber Fuzzy-Match (Schwelle 80)."""
+        norm = self._normalize(full_sentence).lower()
+        for word in norm.split():
+            result = process.extractOne(word, MillCommands.UNDO_KEYWORDS, scorer=fuzz.ratio)
+            if result is not None and result[1] > 80:
+                return True
+        return False
+
+    def find_confirm(self, full_sentence: str):
+        """Erkennt Bestaetigung; True=ja, False=nein, None=unklar."""
+        norm = self._normalize(full_sentence).lower()
+        for word in norm.split():
+            for kw in MillCommands.CONFIRM_YES:
+                if fuzz.ratio(word, kw) > 80:
+                    return True
+            for kw in MillCommands.CONFIRM_NO:
+                if fuzz.ratio(word, kw) > 80:
+                    return False
+        return None
+
     def process_sentence(self):
         while True:
             text = self.text_q_in.get()
+            if self.find_undo(text):
+                self.text_q_out.put(["__UNDO__"])
+                continue
+            confirm = self.find_confirm(text)
+            if confirm is True:
+                self.text_q_out.put(["__YES__"])
+                continue
+            if confirm is False:
+                self.text_q_out.put(["__NO__"])
+                continue
             matches = self.find_all_matches(text)
             if matches is not None:
                 self.text_q_out.put(matches)

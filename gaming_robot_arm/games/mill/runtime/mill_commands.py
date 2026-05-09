@@ -5,7 +5,18 @@ from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
 
 class MillCommands:
     # Aktions-Verben, die Whisper erkennen soll
-    VERBS: list[str] = ["setze", "schlage", "entferne", "nach", "von"]
+    VERBS: list[str] = ["setze", "schlage", "entferne", "nach", "von", "zurück", "zurueck"]
+
+    # Schluesselwoerter fuer Zugruecknahme (Undo)
+    UNDO_KEYWORDS: list[str] = [
+        "zurück", "zurueck",
+        "rückgängig", "rueckgaengig",
+        "zurücknehmen", "zuruecknehmen",
+    ]
+
+    # Bestaetigungsworte fuer Sprach-Bestaetigungs-Dialog
+    CONFIRM_YES: list[str] = ["ja", "okay"]
+    CONFIRM_NO: list[str] = ["nein", "abbrechen"]
 
     # Umgangssprachliche Ring-Aliase: außen=A, mitte=B, innen=C
     RING_ALIASES: dict[str, str] = {
@@ -41,11 +52,15 @@ class MillCommands:
         numbers = ", ".join(self.GERMAN_NUMBERS.keys())
         ring_aliases = ", ".join(f"{alias}={ring}" for alias, ring in self.RING_ALIASES.items())
         letter_aliases = ", ".join(f"{alias}={letter}" for alias, letter in self.LETTER_ALIASES.items())
+        undo = ", ".join(self.UNDO_KEYWORDS)
+        confirm = ", ".join(self.CONFIRM_YES + self.CONFIRM_NO)
         return (
             f"Mühle Brettspiel. Positionen: {positions}. "
             f"Ring-Aliase: {ring_aliases}. "
             f"Buchstaben-Aliase: {letter_aliases}. "
             f"Befehle: {verbs}. "
+            f"Zurueck: {undo}. "
+            f"Bestaetigung: {confirm}. "
             f"Zahlen: {numbers}."
         )
 

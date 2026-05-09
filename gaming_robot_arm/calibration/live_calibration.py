@@ -6,13 +6,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Mapping, Tuple
 
 import cv2
 import numpy as np
 
 from gaming_robot_arm.config import CALIBRATION_DIR, CAMERA_INDEX
-from gaming_robot_arm.utils.logger import logger as base_logger
+from gaming_robot_arm.logger import logger as base_logger
 from gaming_robot_arm.games.mill.core.board import BOARD_LABELS
 from gaming_robot_arm.vision.mill_board_detector import detect_board_positions
 from gaming_robot_arm.vision.recording import open_camera
@@ -220,6 +220,36 @@ def detect_live_board_pixels(
         return board_pixels
 
     raise RuntimeError("Live-Brettkalibrierung fehlgeschlagen.")
+
+
+def fit_homography_from_correspondences(
+    board_pixels: Mapping[str, tuple[float, float]],
+    board_robot: Mapping[str, tuple[float, float]],
+    *,
+    min_pairs: int = 4,
+) -> np.ndarray | None:
+    """Fittet eine Homography von Pixelkoordinaten auf Roboterkoordinaten ueber gemeinsame Labels."""
+    if not board_pixels or not board_robot:
+        logger.warning("Homography-Fit: board_pixels oder board_robot leer.")
+        return None
+
+    labels = [lbl for lbl in board_pixels.keys() if lbl in board_robot]
+    if len(labels) < min_pairs:
+        logger.warning(
+            "Homography-Fit: nur %s gemeinsame Labels (min=%s).",
+            len(labels),
+            min_pairs,
+        )
+        return None
+
+    src = np.array([board_pixels[lbl] for lbl in labels], dtype=np.float32)
+    dst = np.array([board_robot[lbl] for lbl in labels], dtype=np.float32)
+
+    H, _mask = cv2.findHomography(src, dst, method=cv2.RANSAC)
+    if H is None:
+        logger.warning("Homography-Fit fehlgeschlagen (cv2.findHomography).")
+        return None
+    return H
 
 
 def main() -> None:

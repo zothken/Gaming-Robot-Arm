@@ -17,7 +17,7 @@ from gaming_robot_arm.config import (
     FRAME_WIDTH,
     RECORDINGS_DIR,
 )
-from gaming_robot_arm.utils.logger import logger
+from gaming_robot_arm.logger import logger
 
 CAMERA_FOURCC = cv2.VideoWriter.fourcc(*"MJPG")
 WRITER_FOURCC = cv2.VideoWriter.fourcc(*"mp4v")
