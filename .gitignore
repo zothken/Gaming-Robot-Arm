@@ -25,6 +25,7 @@ old
 # Logs
 logs/**
 logs/
+.log
 
 # Trainings-/Datenartefakte
 data/
@@ -52,3 +53,10 @@ gaming_robot_arm/games/mill/cli/selfplay_loop.py
 calibration/cam_to_robot_homography.json
 
 .claude
+.vscode
+tests
+gaming-robot-arm.code-workspace
+.gitmodules
+thesis
+.gaming_robot_arm_launcher.json
+realtimesst.log
