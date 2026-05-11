@@ -293,7 +293,7 @@ class LauncherWindow(QMainWindow):
         category_list.setSpacing(6)
         category_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         category_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        category_list.addItems(["Kamera", "Mühle", "KI", "uArm"])
+        category_list.addItems(["Wahrnehmung", "Mühle", "KI", "uArm"])
         category_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         row_heights = [category_list.sizeHintForRow(i) for i in range(category_list.count())]
         # Qt liefert hier vor dem ersten Rendern teils zu kleine Row-Hints und ignoriert
@@ -325,7 +325,7 @@ class LauncherWindow(QMainWindow):
 
         pages = QStackedWidget()
         pages.setObjectName("SettingsPages")
-        pages.addWidget(self._build_scrollable_page(self._build_camera_tab))
+        pages.addWidget(self._build_scrollable_page(self._build_wahrnehmung_tab))
         pages.addWidget(self._build_scrollable_page(self._build_mill_tab))
         pages.addWidget(self._build_scrollable_page(self._build_ai_tab))
         pages.addWidget(self._build_scrollable_page(self._build_uarm_tab))
@@ -691,7 +691,7 @@ class LauncherWindow(QMainWindow):
                 button.setToolTip("Nicht verfügbar für aktuelle Rollenwahl.")
         self._sync_segment_buttons("mill_uarm_controlled_players")
 
-    def _build_camera_tab(self, layout: QVBoxLayout) -> None:
+    def _build_wahrnehmung_tab(self, layout: QVBoxLayout) -> None:
         camera_box = self._group_box("Kamera")
         camera_form = self._new_form_layout(camera_box)
         self._add_line_edit(
@@ -745,6 +745,38 @@ class LauncherWindow(QMainWindow):
             note_text="Öffnet beim Spielstart ein Fenster mit Live-Kamerabild, gelben Brettpunkten (A1–C8) und erkannten Figuren inkl. Zuordnung.",
         )
         layout.addWidget(vision_box)
+
+        voice_box = self._group_box("Sprach-Brücke")
+        voice_form = self._new_form_layout(voice_box)
+        self._add_check(
+            voice_form,
+            "mill_voice_move_timeout_disabled",
+            "Spracherkennungs-Timeout deaktivieren",
+            note_text="Deaktiviert das 60s-Zeitlimit beim Warten auf einen gesprochenen Zug. Wartet unbegrenzt auf eine gültige Spracheingabe.",
+        )
+        layout.addWidget(voice_box)
+
+        premove_box = self._group_box("Pre-Move-Warnung")
+        premove_form = self._new_form_layout(premove_box)
+        self._add_check(
+            premove_form,
+            "mill_pre_move_vision_gate",
+            "Kamerawächter vor uArm-Zug",
+            note_text="Wartet vor jeder uArm-Bewegung, bis die Kamera einen ruhigen Zustand über dem Brett erkennt. Greift nur wenn Vision aktiv ist.",
+        )
+        self._add_line_edit(
+            premove_form,
+            "mill_pre_move_quiet_timeout",
+            "Vision-Gate Timeout (s)",
+            note_text="Maximale Wartezeit auf ein ruhiges Kamerabild. Nach Ablauf wird trotzdem gezogen.",
+        )
+        self._add_line_edit(
+            premove_form,
+            "mill_pre_move_delay",
+            "Fallback-Pause (s)",
+            note_text="Feste Pause vor der Bewegung, wenn kein Vision-Gate aktiv ist oder das Gate den Timeout erreicht. 0 deaktiviert die Pause.",
+        )
+        layout.addWidget(premove_box)
 
     def _build_mill_tab(self, layout: QVBoxLayout) -> None:
         game_box = self._group_box("Spielablauf")
@@ -817,19 +849,13 @@ class LauncherWindow(QMainWindow):
             "Seed",
             note_text="Startwert für reproduzierbare Zufallsentscheidungen.",
         )
-        layout.addWidget(ai_box)
-
-        ai_flags = self._group_box("KI-Optionen")
-        ai_flags_layout = QVBoxLayout(ai_flags)
-        ai_flags_layout.setContentsMargins(12, 14, 12, 12)
-        ai_flags_layout.setSpacing(6)
         self._add_check(
-            ai_flags_layout,
+            ai_form,
             "mill_random_tiebreak",
             "Zufällige Tie-Breaks bei gleicher Bewertung",
             note_text="Löst gleich bewertete Züge zufällig statt stabil nach Reihenfolge auf.",
         )
-        layout.addWidget(ai_flags)
+        layout.addWidget(ai_box)
 
     def _build_uarm_tab(self, layout: QVBoxLayout) -> None:
         robot_box = self._group_box("uArm")
@@ -2263,6 +2289,7 @@ class LauncherWindow(QMainWindow):
             "mill_uarm_move_both_players",
             "mill_resume_game",
             "mill_restore_board_via_robot",
+            "mill_pre_move_vision_gate",
         }
         int_keys = {
             "camera_index",
@@ -2273,6 +2300,10 @@ class LauncherWindow(QMainWindow):
             "mill_vision_attempts",
             "mill_robot_speed",
         }
+        float_keys = {
+            "mill_pre_move_quiet_timeout",
+            "mill_pre_move_delay",
+        }
         payload: dict[str, object] = {"mode": self._current_mode()}
         for key, widget in self._widgets.items():
             if key in bool_keys:
@@ -2281,6 +2312,12 @@ class LauncherWindow(QMainWindow):
                 text = self._widget_text(widget).strip()
                 try:
                     payload[key] = int(text)
+                except Exception:
+                    payload[key] = text
+            elif key in float_keys:
+                text = self._widget_text(widget).strip()
+                try:
+                    payload[key] = float(text)
                 except Exception:
                     payload[key] = text
             else:

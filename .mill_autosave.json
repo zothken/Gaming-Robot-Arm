@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "saved_at": "2026-05-11T10:46:51",
+  "ply": 1,
+  "state": {
+    "board": {
+      "A1": null,
+      "A2": null,
+      "A3": null,
+      "A4": null,
+      "A5": null,
+      "A6": null,
+      "A7": null,
+      "A8": null,
+      "B1": null,
+      "B2": "W",
+      "B3": null,
+      "B4": null,
+      "B5": null,
+      "B6": null,
+      "B7": null,
+      "B8": null,
+      "C1": null,
+      "C2": null,
+      "C3": null,
+      "C4": null,
+      "C5": null,
+      "C6": null,
+      "C7": null,
+      "C8": null
+    },
+    "to_move": "B",
+    "placed": {
+      "W": 1,
+      "B": 0
+    },
+    "plies_without_capture": 1,
+    "position_history": [
+      "........................|W|0:0",
+      ".........W..............|B|1:0"
+    ]
+  },
+  "move_history": [
+    {
+      "player": "W",
+      "src": null,
+      "dst": "B2",
+      "capture": null
+    }
+  ]
+}

@@ -169,7 +169,7 @@ class VoiceBridge:
                 return None
 
             try:
-                positions = self._match_queue.get(timeout=remaining)
+                positions = self._match_queue.get(timeout=None if remaining == float("inf") else remaining)
             except Empty:
                 print("Spracherkennung: Zeitlimit abgelaufen.")
                 return None

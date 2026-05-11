@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
@@ -53,7 +54,7 @@ from .vision_bridge import (
     _VisionPreviewSession,
     infer_moves_from_observation,
 )
-from .voice_bridge import VoiceBridge
+from .voice_bridge import VoiceBridge, VOICE_MOVE_TIMEOUT_S
 from .signals import UndoSignal
 
 if TYPE_CHECKING:
@@ -187,6 +188,34 @@ def add_mill_cli_arguments(parser: argparse.ArgumentParser) -> None:
         default=False,
         help="Deaktiviert den Baseline-Timeout beim Warten auf ein ruhiges Brett.",
     )
+    other_group.add_argument(
+        "--voice-move-timeout-disabled",
+        dest="mill_voice_move_timeout_disabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Deaktiviert den 60s-Timeout der Spracheingabe. Wartet unbegrenzt auf einen gueltigen Zug.",
+    )
+    other_group.add_argument(
+        "--pre-move-vision-gate",
+        dest="mill_pre_move_vision_gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wartet vor uArm-Bewegungen auf ein ruhiges Kamerabild (nur wenn Vision aktiv).",
+    )
+    other_group.add_argument(
+        "--pre-move-quiet-timeout",
+        dest="mill_pre_move_quiet_timeout",
+        type=float,
+        default=10.0,
+        help="Maximale Wartezeit auf ein ruhiges Bild in Sekunden.",
+    )
+    other_group.add_argument(
+        "--pre-move-delay",
+        dest="mill_pre_move_delay",
+        type=float,
+        default=2.0,
+        help="Feste Pause vor uArm-Bewegung (Fallback ohne Vision oder bei Gate-Timeout, 0 = aus).",
+    )
 
     other_group.add_argument(
         "--uarm-port",
@@ -259,6 +288,30 @@ def _format_move(move: Move) -> str:
     src = move.src if move.src is not None else "VORRAT"
     capture = f" x {move.capture}" if move.capture is not None else ""
     return f"{move.player}: {src} -> {move.dst}{capture}"
+
+
+def _emit_pre_move_warning(
+    move: Move,
+    *,
+    vision_bridge: MillVisionBridge | None,
+    vision_session: "RecordingSession | _LiveVisionSession | None",
+    use_vision_gate: bool,
+    quiet_timeout_s: float,
+    fallback_delay_s: float,
+    kind: str = "Zug",
+) -> None:
+    print(f"Warnung: uArm bewegt sich gleich ({kind} {_format_move(move)}) - Brettbereich freihalten!")
+
+    gate_succeeded = False
+    if use_vision_gate and vision_bridge is not None and vision_session is not None:
+        gate_succeeded = vision_bridge.wait_for_quiet_scene(
+            session=vision_session,
+            timeout_s=quiet_timeout_s,
+            status_callback=print,
+        )
+
+    if not gate_succeeded and fallback_delay_s > 0:
+        time.sleep(fallback_delay_s)
 
 
 def _format_board(board: dict[str, Player | None]) -> str:
@@ -444,13 +497,15 @@ def _choose_human_move(
     vision_session: RecordingSession | _LiveVisionSession | None = None,
     vision_trigger: VisionTriggerMode = "auto",
     baseline_timeout_disabled: bool = False,
+    voice_move_timeout_disabled: bool = False,
 ) -> "Move | UndoSignal":
     legal_moves = list(session.legal_moves())
     if not legal_moves:
         raise RuntimeError("Keine legalen Zuege fuer den menschlichen Zug verfuegbar.")
 
     if controller.input_mode == "voice" and voice_bridge is not None:
-        result = voice_bridge.listen_for_move(legal_moves)
+        voice_timeout = float("inf") if voice_move_timeout_disabled else VOICE_MOVE_TIMEOUT_S
+        result = voice_bridge.listen_for_move(legal_moves, timeout_s=voice_timeout)
         if isinstance(result, UndoSignal):
             return result
         if result is not None:
@@ -737,6 +792,9 @@ def run_mill_game(args: argparse.Namespace) -> int:
                 player = session.state.to_move
                 controller = controllers[player]
 
+                if robot_bridge is not None and player in robot_controlled_players:
+                    print("Hinweis: uArm zieht in diesem Halbzug - Brettbereich vorbereiten.")
+
                 if controller.kind == "ai":
                     provider = require_ai_provider(controller)
                     move = session.choose_ai_move(provider)
@@ -750,6 +808,7 @@ def run_mill_game(args: argparse.Namespace) -> int:
                         vision_session=vision_session,
                         vision_trigger=args.mill_vision_trigger,
                         baseline_timeout_disabled=bool(args.mill_baseline_timeout_disabled),
+                        voice_move_timeout_disabled=bool(args.mill_voice_move_timeout_disabled),
                     )
                     if isinstance(result, UndoSignal):
                         n = _decide_undo_count(session, controllers)
@@ -759,6 +818,15 @@ def run_mill_game(args: argparse.Namespace) -> int:
                         popped = session.undo_n_moves(n)
                         for mv in popped:
                             if robot_bridge is not None and mv.player in robot_controlled_players:
+                                _emit_pre_move_warning(
+                                    mv,
+                                    vision_bridge=vision_bridge,
+                                    vision_session=vision_session,
+                                    use_vision_gate=bool(args.mill_pre_move_vision_gate),
+                                    quiet_timeout_s=args.mill_pre_move_quiet_timeout,
+                                    fallback_delay_s=args.mill_pre_move_delay,
+                                    kind="Rueckgaengig",
+                                )
                                 ok = robot_bridge.reverse_move(mv, player=mv.player)
                                 if not ok:
                                     print(
@@ -780,6 +848,14 @@ def run_mill_game(args: argparse.Namespace) -> int:
                 _save_progress(AUTOSAVE_PATH, session)
 
                 if robot_bridge is not None and player in robot_controlled_players:
+                    _emit_pre_move_warning(
+                        move,
+                        vision_bridge=vision_bridge,
+                        vision_session=vision_session,
+                        use_vision_gate=bool(args.mill_pre_move_vision_gate),
+                        quiet_timeout_s=args.mill_pre_move_quiet_timeout,
+                        fallback_delay_s=args.mill_pre_move_delay,
+                    )
                     executed = robot_bridge.execute_move(move, player=player)
                     if not executed:
                         logger.warning(

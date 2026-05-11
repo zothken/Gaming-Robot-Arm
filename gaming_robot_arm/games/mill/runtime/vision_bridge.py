@@ -471,6 +471,48 @@ class MillVisionBridge:
             if move is not None:
                 return AutoMoveResult(move=move, reason="ok")
 
+    def wait_for_quiet_scene(
+        self,
+        *,
+        session: "RecordingSession | _LiveVisionSession | None",
+        timeout_s: float,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Wartet, bis der Brett-ROI mehrere Frames lang bewegungsfrei ist.
+
+        Returns True bei erkanntem Stillstand, False bei Timeout, fehlender
+        Session oder fehlender Brettkalibrierung.
+        """
+        if session is None or len(self.board_pixels) != len(BOARD_LABELS):
+            return False
+
+        gate = _BoardMotionGate(self.board_pixels)
+        deadline = perf_counter() + max(0.1, float(timeout_s))
+        last_status: str | None = None
+
+        def emit(msg: str) -> None:
+            nonlocal last_status
+            if status_callback is None or msg == last_status:
+                return
+            status_callback(msg)
+            last_status = msg
+
+        emit("Warte auf ruhiges Bild ueber dem Brett...")
+        while True:
+            if perf_counter() > deadline:
+                emit("Timeout: Brett nicht ruhig - fahre vorsichtig fort.")
+                return False
+            try:
+                frame = session.read()
+            except Exception as exc:
+                logger.warning("Pre-Move-Gate: Frame-Lesen fehlgeschlagen: %s", exc)
+                return False
+            session.write(frame)
+            _motion, quiet, _ratio = gate.update(frame)
+            if quiet:
+                emit("Brett ruhig - Roboter bewegt sich.")
+                return True
+
 
 def _check_undo_keypress() -> bool:
     """Liefert True wenn aktuell die Taste 'z' nicht-blockierend gedrueckt wurde.

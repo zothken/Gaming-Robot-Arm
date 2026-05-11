@@ -42,6 +42,11 @@ class LauncherSettings:
     mill_vision_preview: bool = False
     mill_vision_trigger: str = "auto"
     mill_vision_baseline_timeout_disabled: bool = False
+    mill_voice_move_timeout_disabled: bool = False
+
+    mill_pre_move_vision_gate: bool = True
+    mill_pre_move_quiet_timeout: float = 10.0
+    mill_pre_move_delay: float = 2.0
 
     mill_uarm_port: str = "" if UARM_PORT is None else str(UARM_PORT)
     mill_uarm_enable_ai_moves: bool = False

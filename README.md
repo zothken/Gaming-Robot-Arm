@@ -216,7 +216,7 @@ Spielbare Mühle:
    python -m pip install -e ".[hardware,speech,ui]"
    ```
 
-   Dieser Befehl installiert auch die Kernabhängigkeiten aus Schritt 5 — wer Schritt 9 ausführt, kann Schritt 5 überspringen.
+   Dieser Befehl installiert auch die Kernabhängigkeiten aus Schritt 5 — wer Schritt 9 ausführt, kann Schritt 5-8 überspringen.
 
 10. **Hardware verbinden und Ports prüfen**
     - Kamera anschließen und im OS prüfen (z.B. Kamera-App).
@@ -233,17 +233,7 @@ Spielbare Mühle:
       - `MILL_RESERVE_PICK_Z` (Pickhöhe für Reservepositionen)
     - Optional: `BOARD_LINE_PARAMS` in `gaming_robot_arm/vision/mill_board_detector.py` für die Brett-Detektion feinjustieren.
 
-12. **Kalibrierung durchführen**
-
-    ```bash
-    python -m gaming_robot_arm.calibration.live_calibration
-    ```
-
-    - **Option 1**: Brett-Pixel erfassen (A1-C8) und `gaming_robot_arm/calibration/cam_to_robot_homography.json` (nur `board_pixels`) erzeugen/aktualisieren.
-    - **Option 2**: Homography fitten (mindestens 4 Punktpaare). Ergebnis wird in `gaming_robot_arm/calibration/cam_to_robot_homography.json` unter `H` gespeichert.
-    - **Option 3**: Vorhandene Kalibrierungsdateien auflisten.
-
-13. **Installation verifizieren (empfohlen)**
+12. **Installation verifizieren (empfohlen)**
     - Kamera-Test: `python -m gaming_robot_arm.vision.recording` (Live-Vorschau, Stopp mit `q`).
     - Runtime starten: `python main.py` (Standard: `--mode ui`).
     - Spielbare Mill-CLI starten: `python main.py --mode play-mill --game-mode human-vs-ai`.

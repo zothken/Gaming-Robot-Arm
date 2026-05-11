@@ -17,6 +17,16 @@ def _as_int(value: int | float | str, label: str, *, minimum: int | None = None)
     return parsed
 
 
+def _as_float(value: int | float | str, label: str, *, minimum: float | None = None) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} muss eine Dezimalzahl sein") from exc
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{label} muss >= {minimum} sein")
+    return parsed
+
+
 
 def build_command(settings: LauncherSettings, *, python_executable: str, entry_script: Path) -> list[str]:
     mode = str(settings.mode).strip()
@@ -86,6 +96,10 @@ def build_command(settings: LauncherSettings, *, python_executable: str, entry_s
     add_bool("vision-preview", bool(settings.mill_vision_preview))
     cmd.extend(["--vision-trigger", vision_trigger])
     add_bool("baseline-timeout-disabled", bool(settings.mill_vision_baseline_timeout_disabled))
+    add_bool("voice-move-timeout-disabled", bool(settings.mill_voice_move_timeout_disabled))
+    add_bool("pre-move-vision-gate", bool(settings.mill_pre_move_vision_gate))
+    cmd.extend(["--pre-move-quiet-timeout", str(_as_float(settings.mill_pre_move_quiet_timeout, "Vision-Gate Timeout", minimum=0.0))])
+    cmd.extend(["--pre-move-delay", str(_as_float(settings.mill_pre_move_delay, "Fallback-Pause", minimum=0.0))])
 
     uarm_port = str(settings.mill_uarm_port).strip()
     if uarm_port:
