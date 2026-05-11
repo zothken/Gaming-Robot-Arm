@@ -18,14 +18,14 @@ class AudioProcess:
     # Priming-Prompt wird aus MillCommands generiert (single source of truth)
     _INITIAL_PROMPT = MillCommands().build_initial_prompt()
 
-    def __init__(self, cmd_q, model: str = "small"):
+    def __init__(self, cmd_q, model: str = "large-v3"):
         self.cmd_q = cmd_q
         # compute_type muss zum device passen: CUDA-Builds unterstützen int8 nicht
         # zuverlaessig -> int8_float16. Fuer CPU bleibt int8 die richtige Wahl.
         import torch  # lokaler Import, damit Module-Import billig bleibt
         if torch.cuda.is_available():
             device = "cuda"
-            compute_type = "int8_float16"
+            compute_type = "float32"
         else:
             device = "cpu"
             compute_type = "int8"
