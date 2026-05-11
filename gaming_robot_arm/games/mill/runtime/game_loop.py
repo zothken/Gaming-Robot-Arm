@@ -637,15 +637,45 @@ def _dict_to_move(d: dict) -> Move:
     return Move(player=d["player"], src=d.get("src"), dst=d["dst"], capture=d.get("capture"))
 
 
-def _save_progress(path: Path, session: MillGameSession) -> None:
+_SETTINGS_KEYS: tuple[str, ...] = (
+    "camera_index",
+    "mill_mode", "mill_human_color", "mill_human_input", "mill_max_plies",
+    "mill_flying", "mill_threefold_repetition", "mill_no_capture_draw", "mill_no_capture_draw_plies",
+    "mill_ai", "mill_ai_depth", "mill_random_tiebreak", "mill_seed",
+    "mill_vision_attempts", "mill_debug_vision", "mill_vision_preview", "mill_vision_trigger",
+    "mill_voice_move_timeout_disabled",
+    "mill_pre_move_vision_gate", "mill_pre_move_quiet_timeout", "mill_pre_move_delay",
+    "mill_uarm_port", "mill_record_game",
+    "mill_uarm_enable_ai_moves", "mill_uarm_move_both_players",
+    "mill_uarm_controlled_players", "mill_robot_speed", "mill_robot_board_map",
+)
+
+
+def _args_to_settings_dict(args: argparse.Namespace) -> dict:
+    out: dict = {}
+    for key in _SETTINGS_KEYS:
+        val = getattr(args, key, None)
+        if val is not None:
+            out[key] = val
+    # Naming mismatch: argparse dest vs. LauncherSettings field
+    bt = getattr(args, "mill_baseline_timeout_disabled", None)
+    if bt is not None:
+        out["mill_vision_baseline_timeout_disabled"] = bt
+    out["mill_uarm_port"] = "" if out.get("mill_uarm_port") is None else out["mill_uarm_port"]
+    return out
+
+
+def _save_progress(path: Path, session: MillGameSession, args: argparse.Namespace | None = None) -> None:
     try:
-        payload = {
+        payload: dict = {
             "version": 1,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
             "ply": len(session.move_history),
             "state": _state_to_dict(session.state),
             "move_history": [_move_to_dict(m) for m in session.move_history],
         }
+        if args is not None:
+            payload["settings"] = _args_to_settings_dict(args)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except Exception as exc:
         logger.warning("Autosave fehlgeschlagen (%s); Spiel laeuft weiter.", exc)
@@ -837,7 +867,7 @@ def run_mill_game(args: argparse.Namespace) -> int:
                                     f"Bitte Stein {mv.player} manuell zuruecksetzen "
                                     f"(rueckwaerts: {_format_move(mv)})."
                                 )
-                        _save_progress(AUTOSAVE_PATH, session)
+                        _save_progress(AUTOSAVE_PATH, session, args)
                         print(f"{n} Halbzug/Halbzuege zurueckgenommen.")
                         continue
                     move = result
@@ -845,7 +875,7 @@ def run_mill_game(args: argparse.Namespace) -> int:
 
                 _record_single_frame(game_recording)
                 session.apply_move(move)
-                _save_progress(AUTOSAVE_PATH, session)
+                _save_progress(AUTOSAVE_PATH, session, args)
 
                 if robot_bridge is not None and player in robot_controlled_players:
                     _emit_pre_move_warning(
@@ -903,6 +933,80 @@ def run_mill_game(args: argparse.Namespace) -> int:
             robot_bridge.close()
         if voice_bridge is not None:
             voice_bridge.shutdown()
+
+
+def add_cleanup_board_cli_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--camera-index", type=int, default=CAMERA_INDEX, help="Kamera-Index fuer die Bretterkennung.")
+    parser.add_argument("--uarm-port", default=UARM_PORT, help="Serieller Port des uArm-Roboters.")
+    parser.add_argument("--robot-speed", type=int, default=500, help="Robotergeschwindigkeit (mm/min).")
+    parser.add_argument(
+        "--robot-board-map",
+        choices=ROBOT_BOARD_MAPS,
+        default="default",
+        help="Koordinatenmapping fuer den Roboter.",
+    )
+    parser.add_argument("--vision-attempts", type=int, default=6, dest="mill_vision_attempts", help="Scan-Versuche fuer die Figurenerkennung.")
+
+
+def run_board_cleanup(args: argparse.Namespace) -> int:
+    from gaming_robot_arm.games.mill.core.rules import count_pieces
+    from gaming_robot_arm.vision.recording import open_camera
+
+    vision_bridge = MillVisionBridge.for_live_session(
+        attempts=getattr(args, "mill_vision_attempts", 6),
+        camera_index=args.camera_index,
+    )
+
+    print("Kamera wird geoeffnet ...")
+    try:
+        live_camera = open_camera(camera_index=args.camera_index)
+    except Exception as exc:
+        print(f"Fehler: Kamera konnte nicht geoeffnet werden: {exc}")
+        return 1
+
+    with live_camera:
+        vision_session = _LiveVisionSession(camera=live_camera)
+
+        print("Brettfelder werden erkannt ...")
+        try:
+            vision_bridge.calibrate_temporary_board_pixels(session=vision_session, attempts=5)
+        except Exception as exc:
+            print(f"Fehler: Bretterkennung fehlgeschlagen: {exc}")
+            return 1
+
+        print("Figuren werden erkannt ...")
+        observed = vision_bridge.observe_board(session=vision_session)
+
+    w_count = count_pieces(observed, "W")
+    b_count = count_pieces(observed, "B")
+    total = w_count + b_count
+    if total == 0:
+        print("Keine Figuren auf dem Brett erkannt – nichts zu tun.")
+        return 0
+    print(f"Erkannt: {w_count} weiss, {b_count} schwarz ({total} gesamt)")
+
+    state = MillState(
+        board=observed,
+        to_move="W",
+        placed={"W": w_count, "B": b_count},
+    )
+
+    board_positions = load_robot_board_positions(args.robot_board_map)
+    bridge = MillRobotBridge(
+        board_positions=board_positions,
+        port=args.uarm_port or None,
+        reserve_positions=build_default_reserve_positions(),
+        move_speed=args.robot_speed,
+    )
+
+    print("Brett aufraeuemen ...")
+    bridge.connect()
+    try:
+        bridge.cleanup_board(state)
+    finally:
+        bridge.close()
+    print("Brett aufgeraeumt.")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:

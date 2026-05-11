@@ -2,8 +2,6 @@
 # und berechnet daraus die 24 Feldpositionen (A1-C8) mit EMA-Glaettung.
 
 from dataclasses import dataclass
-from pathlib import Path
-import re
 from typing import Literal, overload
 import numpy as np
 
@@ -22,19 +20,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover - optionaler Laufzeitpfad
 
     cv2 = _Cv2Proxy()  # type: ignore[assignment]
 
-# Konturen-basierte Parameter
-BOARD_LINE_PARAMS = {
-    "blur_ksize": 21,
-    "bw_block": 19,
-    "bw_C": 10,
-    "bw_open": 2,
-    "morph_close": 15,
-    "approx_eps_pct": 3,
-    "min_area_pct": 1,
-    "ema_alpha": 40,
-}
+from gaming_robot_arm.vision.detector_config import load_board_params, save_board_params
+
+BOARD_LINE_PARAMS = load_board_params()
 DEFAULT_PARAMS = BOARD_LINE_PARAMS.copy()
-DETECTOR_PATH = Path(__file__).resolve()
 
 BOARD_PARAM_ORDER = [
     ("blur_ksize", "Gauss-Blur (ungerade)"),
@@ -257,37 +246,6 @@ def normalize_board_params(params):
     return normalized
 
 
-def format_board_params(params):
-    lines = ["BOARD_LINE_PARAMS = {"]
-    for key, comment in BOARD_PARAM_ORDER:
-        if key not in params:
-            continue
-        val = int(params[key])
-        if comment:
-            lines.append(f'    "{key}": {val},  # {comment}')
-        else:
-            lines.append(f'    "{key}": {val},')
-    lines.append("}")
-    return "\n".join(lines) + "\n"
-
-
-def write_board_params_to_detector(params, path=DETECTOR_PATH):
-    if not path.exists():
-        print(f"WARN: Detector-Datei nicht gefunden: {path}")
-        return False
-    text = path.read_text(encoding="utf-8")
-    pattern = r"BOARD_LINE_PARAMS\s*=\s*\{.*?\}\n?"
-    match = re.search(pattern, text, flags=re.S)
-    if not match:
-        print("WARN: BOARD_LINE_PARAMS Block nicht gefunden.")
-        return False
-    new_block = format_board_params(params)
-    updated = text[:match.start()] + new_block + text[match.end():]
-    if updated != text:
-        path.write_text(updated, encoding="utf-8")
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Main detection function
 # ---------------------------------------------------------------------------
@@ -504,9 +462,9 @@ if __name__ == "__main__":
 
                 save_params = normalize_board_params(slider_params)
                 if cv2.getTrackbarPos("save_config", ui) == 1:
-                    if write_board_params_to_detector(save_params):
-                        DEFAULT_PARAMS.update(save_params)
-                        print("Board-Parameter in mill_board_detector.py gespeichert.")
+                    save_board_params(save_params)
+                    DEFAULT_PARAMS.update(save_params)
+                    print("Board-Parameter in board_detector_config.json gespeichert.")
                     cv2.setTrackbarPos("save_config", ui, 0)
 
                 pts, vis, bw_out = detect_board_positions(frame, debug=False, return_bw=True, params=slider_params)

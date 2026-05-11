@@ -27,7 +27,7 @@ def main():
     parser = argparse.ArgumentParser(description="Sprachbefehl-Test")
     parser.add_argument(
         "--model",
-        default="tiny",
+        default="small",
         choices=["tiny", "base", "small", "medium", "large-v2", "large-v3"],
         help="Whisper-Modell (Standard: 'tiny' fuer schnellen Test, 'large-v3' wie im Spiel)",
     )

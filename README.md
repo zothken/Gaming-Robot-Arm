@@ -226,6 +226,7 @@ Spielbare Mühle:
     - `gaming_robot_arm/config.py` anpassen:
       - `CAMERA_INDEX`, `FRAME_WIDTH`/`FRAME_HEIGHT` (optional; `None` = native Kameraauflösung), `FRAME_RATE` (optional; `None` = native Kamera-FPS)
       - `SAFE_Z`, `REST_POS`
+      - `DEBUG` (Log-Level; siehe [Log-Level konfigurieren](#log-level-konfigurieren))
     - `gaming_robot_arm/calibration/mill_default_calibration.py` anpassen:
       - `MILL_UARM_POSITIONS` (A1-C8 Brettkoordinaten)
       - `MILL_WHITE_RESERVE_POSITIONS` und `MILL_BLACK_RESERVE_POSITIONS` (3x3 Vorratskoordinaten für Setzzüge)
@@ -379,6 +380,28 @@ ai = AlphaBetaMillAI(depth=3)
 move = session.choose_ai_move(ai)
 session.apply_move(move)
 ```
+
+## Log-Level konfigurieren
+
+Das Log-Level steuert, wie viel die Anwendung in der Konsole ausgibt.
+Es wird zentral in [`gaming_robot_arm/config.py`](gaming_robot_arm/config.py) über das Flag `DEBUG` gesetzt:
+
+```python
+# gaming_robot_arm/config.py
+
+DEBUG = False  # True → DEBUG-Level, False → INFO-Level
+LOG_LEVEL = "DEBUG" if DEBUG else "INFO"
+```
+
+| Level     | Was wird ausgegeben |
+|-----------|---------------------|
+| `DEBUG`   | Alle Meldungen: interne Zwischenschritte, Detektionswerte, Arm-Koordinaten, KI-Zugbewertungen usw. |
+| `INFO`    | Wichtige Statusmeldungen: Spielphasen, Züge, Armstatus, Verbindungsaufbau. |
+| `WARNING` | Nur Warnungen und Fehler. |
+| `ERROR`   | Nur Fehler. |
+
+Für den normalen Betrieb reicht `DEBUG = False` (INFO-Level).
+`DEBUG = True` ist nützlich, wenn etwas nicht funktioniert und mehr Details gebraucht werden.
 
 ## Fehlerbehebung (Zuordnung = 0)
 

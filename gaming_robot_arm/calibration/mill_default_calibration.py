@@ -52,29 +52,28 @@ MILL_UARM_POSITIONS: Dict[str, Tuple[float, float]] = {
 }
 
 # Vorratskoordinaten fuer Setzzuege (3x3 je Farbe), zeilenweise.
-# Weiss: Start (16,116), Rasterabstand 25 mm.
-# Schwarz: Spiegelung in -Y mit identischen X-Werten.
+# X: 13, 38, 63 mm; Y (Weiss): 115, 140, 160 mm; Y (Schwarz): negativ gespiegelt.
 MILL_WHITE_RESERVE_POSITIONS: tuple[tuple[float, float], ...] = (
-    (16.0, 116.0),
-    (16.0, 141.0),
-    (16.0, 166.0),
-    (41.0, 116.0),
-    (41.0, 141.0),
-    (41.0, 166.0),
-    (66.0, 116.0),
-    (66.0, 141.0),
-    (66.0, 166.0),
+    (13.0, 135.0),
+    (13.0, 160.0),
+    (13.0, 185.0),
+    (38.0, 135.0),
+    (38.0, 160.0),
+    (38.0, 185.0),
+    (63.0, 135.0),
+    (63.0, 160.0),
+    (63.0, 185.0),
 )
 MILL_BLACK_RESERVE_POSITIONS: tuple[tuple[float, float], ...] = (
-    (16.0, -116.0),
-    (16.0, -141.0),
-    (16.0, -166.0),
-    (41.0, -116.0),
-    (41.0, -141.0),
-    (41.0, -166.0),
-    (66.0, -116.0),
-    (66.0, -141.0),
-    (66.0, -166.0),
+    (13.0, -135.0),
+    (13.0, -160.0),
+    (13.0, -185.0),
+    (38.0, -135.0),
+    (38.0, -160.0),
+    (38.0, -185.0),
+    (63.0, -135.0),
+    (63.0, -160.0),
+    (63.0, -185.0),
 )
 
 # Pickhoehe fuer Reservepositionen (mm).

@@ -30,9 +30,9 @@ AUTOSAVE_PATH = PROJECT_ROOT / ".mill_autosave.json"  # Automatischer Spielstand
 UARM_PORT = None  # Wird automatisch erkannt
 UARM_CALLBACK_THREADS = 1  # Anzahl Callback-Threads der SwiftAPI
 SAFE_Z = 80  # mm - sichere Hoehe ueber Spielfeld
-REST_POS = (60.0, 110.0, 70.0)  # Standard-Ruheposition (x, y, z)
+REST_POS = (60.0, 110.0, 80.0)  # Standard-Ruheposition (x, y, z)
 
 # Allgemeine Einstellungen
-DEBUG = True  # Debugmodus fuer zusaetzliche Ausgaben
+DEBUG = False  # Debugmodus fuer zusaetzliche Ausgaben
 LOG_LEVEL = "DEBUG" if DEBUG else "INFO"  # Protokollstufe fuer Logger
 

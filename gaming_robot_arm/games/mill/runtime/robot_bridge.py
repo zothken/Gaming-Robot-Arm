@@ -163,7 +163,7 @@ class MillRobotBridge:
         src_xy = self._resolve_move_source(move, player)
         dst_xy = self.board_positions.get(move.dst)
         src_pick_z = self.reserve_pick_z if is_placement_move else MILL_PICK_Z
-        pick_lift_z = MILL_PLACE_Z if is_placement_move else SAFE_Z
+        pick_lift_z = SAFE_Z
 
         if src_xy is None:
             logger.warning(
@@ -255,7 +255,7 @@ class MillRobotBridge:
                     self._pick_and_place(
                         src_xy, dst_xy,
                         src_pick_z=MILL_PICK_Z,
-                        pick_lift_z=self.reserve_pick_z,
+                        pick_lift_z=SAFE_Z,
                     )
             else:
                 src_xy = self.board_positions.get(move.dst)
@@ -504,7 +504,7 @@ class MillRobotBridge:
     def _place_at(self, xy: tuple[float, float]) -> None:
         x, y = xy
         swift = self._require_swift()
-        self._move_to(x, y, SAFE_Z)
+        self._require_controller().safe_move(x, y, SAFE_Z, speed=self.move_speed)
         self._move_to(x, y, MILL_PLACE_Z)
         swift.set_pump(on=False)
         time.sleep(0.2)

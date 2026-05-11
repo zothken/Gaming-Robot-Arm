@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 
-APP_MODES = ("ui", "play-mill")
+APP_MODES = ("ui", "play-mill", "cleanup-board")
 
 
 def _requested_mode(argv: Sequence[str] | None) -> str:
@@ -26,10 +26,15 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
         help="Startet UI-Launcher oder den spielbaren Muehle-Loop.",
     )
 
-    if _requested_mode(argv) == "play-mill":
+    requested = _requested_mode(argv)
+    if requested == "play-mill":
         from gaming_robot_arm.games.mill.cli.play import add_mill_cli_arguments
 
         add_mill_cli_arguments(parser)
+    elif requested == "cleanup-board":
+        from gaming_robot_arm.games.mill.runtime.game_loop import add_cleanup_board_cli_arguments
+
+        add_cleanup_board_cli_arguments(parser)
     return parser
 
 
@@ -41,7 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             from gaming_robot_arm.ui import launch_launcher
 
-            return launch_launcher(entry_script=Path(__file__).resolve())
+            return launch_launcher(entry_script=Path(__file__).resolve().parent.parent / "main.py")
         except ModuleNotFoundError as exc:
             if exc.name == "PySide6":
                 print(f"UI-Launcher konnte nicht geladen werden: {exc}")
@@ -57,6 +62,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         from gaming_robot_arm.games.mill.cli.play import run_mill_game
 
         return run_mill_game(args)
+
+    if args.mode == "cleanup-board":
+        from gaming_robot_arm.games.mill.runtime.game_loop import run_board_cleanup
+
+        return run_board_cleanup(args)
 
     raise ValueError(f"Nicht unterstuetzter Modus: {args.mode}")
 

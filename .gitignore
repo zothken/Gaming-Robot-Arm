@@ -45,12 +45,11 @@ gaming_robot_arm/games/mill/cli/selfplay_loop.py
 
 # Videoaufnahmen
 *.mp4
-
-# Videoaufnahmen
 *.avi
 
-# Kalibrierungsausgabe
-calibration/cam_to_robot_homography.json
+# Gerätespezifische Detektor-Tuning-Parameter
+gaming_robot_arm/vision/figure_detector_config.json
+gaming_robot_arm/vision/board_detector_config.json
 
 .claude
 .vscode
@@ -60,3 +59,4 @@ gaming-robot-arm.code-workspace
 thesis
 .gaming_robot_arm_launcher.json
 realtimesst.log
+.mill_autosave.json

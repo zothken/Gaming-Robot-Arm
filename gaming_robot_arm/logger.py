@@ -2,8 +2,10 @@
 
 import logging
 
+from gaming_robot_arm.config import LOG_LEVEL
+
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, LOG_LEVEL),
     format="[%(asctime)s] [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )

@@ -17,6 +17,8 @@ class CommandProcess:
     def _normalize(self, text: str) -> str:
         """Ersetzt Ring-Aliase und deutsche Zahlwörter, kombiniert dann 'B 3' -> 'B3'."""
         result = text
+        for alias, pos in MillCommands.POSITION_ALIASES.items():
+            result = re.sub(rf'\b{re.escape(alias)}\b', pos, result, flags=re.IGNORECASE)
         for alias, letter in MillCommands.LETTER_ALIASES.items():
             result = re.sub(rf'\b{re.escape(alias)}\b', letter, result, flags=re.IGNORECASE)
         for alias, ring in MillCommands.RING_ALIASES.items():

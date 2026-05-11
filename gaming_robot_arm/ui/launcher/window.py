@@ -6,7 +6,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QTimer, Qt
+from PySide6.QtCore import QFileSystemWatcher, QProcess, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QFont, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -111,12 +111,16 @@ class LauncherWindow(QMainWindow):
         self._stop_request_id = 0
         self._resume_info_label: QLabel | None = None
         self._resume_game_button: QPushButton | None = None
+        self._cleanup_board_button: QPushButton | None = None
+        self._autosave_watcher: QFileSystemWatcher | None = None
 
         self._setup_process()
         self._build_ui()
         self._apply_theme()
+        self._setup_autosave_watcher()
 
         self._apply_settings_to_widgets(self._load_settings())
+        self._apply_autosave_settings_if_available()
         self._show_home_screen()
         self._refresh_context()
         self._refresh_command_preview()
@@ -233,11 +237,10 @@ class LauncherWindow(QMainWindow):
         play_btn = QPushButton("Spiel Starten")
         play_btn.setObjectName("MenuPrimaryButton")
         play_btn.clicked.connect(self._show_launch_screen)
-        resume_btn = QPushButton("Spiel fortsetzen")
-        resume_btn.setObjectName("MenuSecondaryButton")
-        resume_btn.setEnabled(False)
-        resume_btn.clicked.connect(self._resume_game_from_home)
-        self._resume_game_button = resume_btn
+        cleanup_btn = QPushButton("Brett aufräumen")
+        cleanup_btn.setObjectName("MenuSecondaryButton")
+        cleanup_btn.clicked.connect(self._start_board_cleanup)
+        self._cleanup_board_button = cleanup_btn
         settings_btn = QPushButton("Einstellungen")
         settings_btn.setObjectName("MenuSecondaryButton")
         settings_btn.clicked.connect(self._show_settings_screen)
@@ -249,7 +252,7 @@ class LauncherWindow(QMainWindow):
         exit_btn.clicked.connect(self.close)
 
         menu_layout.addWidget(play_btn)
-        menu_layout.addWidget(resume_btn)
+        menu_layout.addWidget(cleanup_btn)
         menu_layout.addWidget(settings_btn)
         menu_layout.addWidget(dev_btn)
         menu_layout.addWidget(exit_btn)
@@ -1149,7 +1152,7 @@ class LauncherWindow(QMainWindow):
 
         save_btn = QPushButton("Board-Parameter in Detector speichern")
         save_btn.setToolTip(
-            "Schreibt die aktuellen Board-Parameter via write_board_params_to_detector in mill_board_detector.py."
+            "Schreibt die aktuellen Board-Parameter in board_detector_config.json."
         )
         save_btn.clicked.connect(self._save_board_params)
         outer.addWidget(save_btn)
@@ -1271,21 +1274,21 @@ class LauncherWindow(QMainWindow):
 
     def _save_board_params(self) -> None:
         try:
+            from gaming_robot_arm.vision.detector_config import save_board_params
             from gaming_robot_arm.vision.mill_board_detector import (
                 BOARD_LINE_PARAMS,
                 normalize_board_params,
-                write_board_params_to_detector,
             )
         except Exception as exc:
             self._append_log(f"[launcher] Board-Parameter speichern fehlgeschlagen (Import): {exc}\n")
             return
         try:
             normalized = normalize_board_params(self._live_board_params)
-            write_board_params_to_detector(normalized)
+            save_board_params(normalized)
             BOARD_LINE_PARAMS.update(normalized)
             self._live_board_params.update(normalized)
             self._sync_param_widgets(self._board_param_widgets, self._live_board_params)
-            self._append_log("[launcher] Board-Parameter in mill_board_detector.py gespeichert.\n")
+            self._append_log("[launcher] Board-Parameter in board_detector_config.json gespeichert.\n")
         except Exception as exc:
             self._append_log(f"[launcher] Board-Parameter speichern fehlgeschlagen: {exc}\n")
 
@@ -1396,6 +1399,114 @@ class LauncherWindow(QMainWindow):
             resume_widget.setChecked(True)
             self._suppress_form_updates = False
         self._show_launch_screen()
+
+    def _build_cleanup_command(self) -> list[str]:
+        payload = self._collect_settings_payload()
+        uarm_port = str(payload.get("mill_uarm_port", "")).strip()
+        robot_speed = int(payload.get("mill_robot_speed", 500))
+        robot_board_map = str(payload.get("mill_robot_board_map", "default")).strip()
+        camera_index = int(payload.get("camera_index", 0))
+        cmd = [
+            sys.executable,
+            "-u",
+            str(self.entry_script),
+            "--mode",
+            "cleanup-board",
+            "--camera-index",
+            str(camera_index),
+            "--robot-speed",
+            str(robot_speed),
+            "--robot-board-map",
+            robot_board_map,
+        ]
+        if uarm_port:
+            cmd.extend(["--uarm-port", uarm_port])
+        return cmd
+
+    def _start_board_cleanup(self) -> None:
+        if self._is_process_running():
+            self._set_status("Es läuft bereits ein Prozess")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Brett aufräumen",
+            "Alle Figuren vom Brett zurück in die Reserve räumen?\nDer Roboter fährt alle Brettfelder ab.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        cmd = self._build_cleanup_command()
+        self._save_settings(quiet=True)
+        self._clear_stdin()
+        self._stop_requested = False
+        self._stop_force_killed = False
+        self._stop_request_id += 1
+        self._append_log(f"\n[launcher] Starte Brett-Aufräumen:\n{shlex.join(cmd)}\n\n")
+
+        if self._process is None:
+            self._setup_process()
+        assert self._process is not None
+
+        error = start_qprocess(self._process, cmd=cmd, project_root=self.project_root)
+        if error is not None:
+            self._append_log(f"[launcher] Start fehlgeschlagen: {error}\n")
+            QMessageBox.critical(self, "Start fehlgeschlagen", f"Prozess konnte nicht gestartet werden:\n{error}")
+            self._set_status("Start fehlgeschlagen")
+            self._sync_runtime_controls()
+            return
+
+        self._set_runtime_output_only(True)
+        self._set_status("Läuft (Brett aufräumen)")
+        self._sync_runtime_controls()
+
+    def _setup_autosave_watcher(self) -> None:
+        autosave_path = self.project_root / ".mill_autosave.json"
+        watcher = QFileSystemWatcher(self)
+        watcher.addPath(str(self.project_root))
+        if autosave_path.exists():
+            watcher.addPath(str(autosave_path))
+        watcher.fileChanged.connect(self._on_autosave_file_changed)
+        watcher.directoryChanged.connect(self._on_autosave_dir_changed)
+        self._autosave_watcher = watcher
+
+    def _on_autosave_file_changed(self, path: str) -> None:
+        autosave_path = self.project_root / ".mill_autosave.json"
+        if self._autosave_watcher is not None and autosave_path.exists():
+            # Re-add: QFileSystemWatcher drops deleted files automatically
+            if str(autosave_path) not in self._autosave_watcher.files():
+                self._autosave_watcher.addPath(str(autosave_path))
+        self._apply_autosave_settings_if_available()
+        self._refresh_resume_info()
+
+    def _on_autosave_dir_changed(self, _path: str) -> None:
+        autosave_path = self.project_root / ".mill_autosave.json"
+        if self._autosave_watcher is not None:
+            watched = self._autosave_watcher.files()
+            file_str = str(autosave_path)
+            if autosave_path.exists() and file_str not in watched:
+                self._autosave_watcher.addPath(file_str)
+            elif not autosave_path.exists() and file_str in watched:
+                self._autosave_watcher.removePath(file_str)
+        self._apply_autosave_settings_if_available()
+        self._refresh_resume_info()
+
+    def _apply_autosave_settings_if_available(self) -> None:
+        import json as _json
+        autosave_path = self.project_root / ".mill_autosave.json"
+        if not autosave_path.exists():
+            return
+        try:
+            data = _json.loads(autosave_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if "settings" not in data:
+            return
+        saved = LauncherSettings.from_payload(data["settings"])
+        saved.mill_resume_game = True
+        saved.mill_restore_board_via_robot = False
+        self._apply_settings_to_widgets(saved)
 
     def _refresh_resume_info(self) -> None:
         if self._suppress_form_updates:
@@ -2622,6 +2733,8 @@ class LauncherWindow(QMainWindow):
             self._stdin_input.setEnabled(running)
         if self._recalibrate_button is not None:
             self._recalibrate_button.setEnabled(running and self._runtime_uses_vision())
+        if self._cleanup_board_button is not None:
+            self._cleanup_board_button.setEnabled(not running)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt API)
         if self._is_process_running() and self._process is not None:

@@ -32,6 +32,12 @@ class MillCommands:
         "tse": "C", "ce": "C", "zee": "C", "zeh": "C",
     }
 
+    # Positions-Aliase: ganze fehlerkannte Tokens → exakte Brett-Position
+    # Ergänzen, wenn Whisper konsistent eine bestimmte Fehlerkennung liefert.
+    POSITION_ALIASES: dict[str, str] = {
+        "besex": "B6",
+    }
+
     # Deutsche Zahlwörter für den Zugnummer-Fallback
     GERMAN_NUMBERS: dict[str, int] = {
         "eins": 1, "ein": 1, "zwei": 2, "zwo": 2, "drei": 3, "dreie": 3, "vier": 4,
@@ -52,9 +58,10 @@ class MillCommands:
         numbers = ", ".join(self.GERMAN_NUMBERS.keys())
         ring_aliases = ", ".join(f"{alias}={ring}" for alias, ring in self.RING_ALIASES.items())
         letter_aliases = ", ".join(f"{alias}={letter}" for alias, letter in self.LETTER_ALIASES.items())
+        position_aliases = ", ".join(f"{alias}={pos}" for alias, pos in self.POSITION_ALIASES.items())
         undo = ", ".join(self.UNDO_KEYWORDS)
         confirm = ", ".join(self.CONFIRM_YES + self.CONFIRM_NO)
-        return (
+        prompt = (
             f"Mühle Brettspiel. Positionen: {positions}. "
             f"Ring-Aliase: {ring_aliases}. "
             f"Buchstaben-Aliase: {letter_aliases}. "
@@ -63,6 +70,9 @@ class MillCommands:
             f"Bestaetigung: {confirm}. "
             f"Zahlen: {numbers}."
         )
+        if position_aliases:
+            prompt += f" Positions-Aliase: {position_aliases}."
+        return prompt
 
     def get_command_list_for_llm(self):
         return self.command_list
