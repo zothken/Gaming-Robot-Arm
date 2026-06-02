@@ -60,3 +60,6 @@ thesis
 .gaming_robot_arm_launcher.json
 realtimesst.log
 .mill_autosave.json
+
+# UI prototype (work in progress, not tracked)
+gaming_robot_arm/ui/prototype/

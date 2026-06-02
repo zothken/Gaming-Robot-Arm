@@ -118,7 +118,7 @@ Bitte Zugnummer eingeben:
 
 Die KI antwortet automatisch, dann ist wieder Weiß dran. So geht es abwechselnd weiter.
 
-**Spiel beenden:** Warten bis ein Spieler gewinnt, oder `q` + Enter eingeben um abzubrechen.
+**Spiel beenden:** Warten bis ein Spieler gewinnt, oder `q` + Enter eingeben, um abzubrechen.
 
 **Undo:** `z` + Enter — nimmt den letzten eigenen Zug zurück (falls erlaubt).
 
@@ -134,11 +134,11 @@ Das Mühle-Brett hat **24 Felder** in drei konzentrischen Ringen:
 A1 ———————— A2 ———————— A3
 |            |            |
 |   B1 ————— B2 ————— B3  |
-|   |         |         |  |
-|   |  C1 — C2 — C3   |  |
-|   |   |         |   |  |
-|   |  C8 — C7 — C6   |  |
-|   |         |         |  |
+|   |         |       |   |
+|   |  C1 — C2 — C3   |   |
+|   |   |         |   |   |
+|   |  C8 — C7 — C6   |   |
+|   |         |       |   |
 |   B8 ————— B7 ————— B6  |
 |            |            |
 A8 ———————— A7 ———————— A6
@@ -459,9 +459,9 @@ Die Einstellung „Max. Halbzüge" ist aktiv und wurde erreicht. Tab *Mühle* �
 Das System wartet auf ein ruhiges Brett (keine Bewegung im Bild). Hand vollständig aus dem Kamerabild nehmen. Bei Problemen: Baseline-Timeout in den Einstellungen deaktivieren.
 
 **„Spracheingabe reagiert nicht"**
-Prüfen ob die Sprach-Pakete installiert sind (README: `speech`-Extra). Mikrofon-Zugriff im Betriebssystem erlaubt? Timeout ist 60 Sekunden — nach Ablauf erscheint eine Fehlermeldung.
+Prüfen, ob die Sprach-Pakete installiert sind (README: `speech`-Extra). Mikrofon-Zugriff im Betriebssystem erlaubt? Timeout ist 60 Sekunden — nach Ablauf erscheint eine Fehlermeldung.
 
-**„Der Roboter bewegt sich trotzdem obwohl ich die Warnung gehört habe"**
+**„Der Roboter bewegt sich trotzdem, obwohl ich die Warnung gehört habe"**
 Richtig — die Warnung erscheint kurz bevor der Roboter fährt. Es gibt eine kurze Pause (Fallback-Pause, Standard: 2 Sekunden), dann bewegt sich der Arm. Den Bereich sofort nach der Warnung freimachen.
 
 **„Roboter verbindet sich nicht"**
@@ -477,7 +477,7 @@ Der Stop-Button erscheint nur während ein Spiel läuft. Er ist im rechten Panel
 
 ## 14. Kurzreferenz Tastatureingaben
 
-Im laufenden Spiel (Eingabe im Log-Panel oder Process-Input-Feld):
+Im laufenden Spiel (Eingabe im Log-Panel oder Prozess-Input-Feld):
 
 | Eingabe | Aktion |
 |---|---|
